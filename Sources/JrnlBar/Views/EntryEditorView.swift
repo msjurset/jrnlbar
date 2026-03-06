@@ -137,6 +137,35 @@ class JrnlTextView: NSTextView {
     var tagKeyHandler: ((EntryEditorView.TagKeyEvent) -> Bool)?
     var isShowingTags: (() -> Bool)?
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command) {
+            switch event.charactersIgnoringModifiers {
+            case "v":
+                pasteAsPlainText(nil)
+                return true
+            case "c":
+                copy(nil)
+                return true
+            case "x":
+                cut(nil)
+                return true
+            case "a":
+                selectAll(nil)
+                return true
+            case "z":
+                if event.modifierFlags.contains(.shift) {
+                    undoManager?.redo()
+                } else {
+                    undoManager?.undo()
+                }
+                return true
+            default:
+                break
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
         // Cmd+Enter → submit
         if event.modifierFlags.contains(.command) && event.keyCode == 36 {

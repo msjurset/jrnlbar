@@ -1,8 +1,13 @@
 import Foundation
 
-struct Tag: Identifiable, Hashable {
-    let name: String
-    let count: Int
+public struct Tag: Identifiable, Hashable {
+    public let name: String
+    public let count: Int
 
-    var id: String { name }
+    public var id: String { name }
+
+    public init(name: String, count: Int) {
+        self.name = name
+        self.count = count
+    }
 }

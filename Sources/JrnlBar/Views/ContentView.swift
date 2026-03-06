@@ -1,6 +1,8 @@
 import SwiftUI
 
-struct ContentView: View {
+public struct ContentView: View {
+    public init() {}
+
     @State private var entryText = ""
     @State private var tags: [Tag] = []
     @State private var recentEntries: [JournalEntry] = []
@@ -9,6 +11,10 @@ struct ContentView: View {
     @State private var tagPrefix = ""
     @State private var tagSelectedIndex = 0
     @State private var journals: [String] = []
+    @State private var editingEntry: JournalEntry?
+    @State private var editingJournal: String?
+    @State private var pendingEditEntry: JournalEntry?
+    @State private var showUnsavedAlert = false
     @AppStorage("sortNewestFirst") private var sortNewestFirst = true
     @AppStorage("selectedJournal") private var selectedJournal = "default"
 
@@ -34,7 +40,9 @@ struct ContentView: View {
         )
     }
 
-    var body: some View {
+    private var isEditing: Bool { editingEntry != nil }
+
+    public var body: some View {
         VStack(spacing: 0) {
             editorView
 
@@ -45,9 +53,18 @@ struct ContentView: View {
             // Submit bar
             HStack {
                 Button(action: submit) {
-                    Text("Save Entry")
+                    Text(isEditing ? "Update Entry" : "Save Entry")
                 }
                 .disabled(entryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting)
+
+                if isEditing {
+                    Button(action: cancelEdit) {
+                        Text("Cancel")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
 
                 if journals.count > 1 {
                     Spacer().frame(width: 16)
@@ -62,9 +79,13 @@ struct ContentView: View {
                                 .font(.caption)
                                 .fontWeight(journal == selectedJournal ? .bold : .regular)
                                 .foregroundStyle(journal == selectedJournal ? .primary : .secondary)
-                                .onTapGesture { selectedJournal = journal }
+                                .onTapGesture {
+                                    guard !isEditing else { return }
+                                    selectedJournal = journal
+                                }
                         }
                     }
+                    .opacity(isEditing ? 0.5 : 1)
                 }
 
                 if !statusMessage.isEmpty {
@@ -76,9 +97,15 @@ struct ContentView: View {
 
                 Spacer()
 
-                Text("Cmd+Enter")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                if isEditing {
+                    Text("Editing (\(editingJournal ?? selectedJournal))")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Cmd+Enter")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -96,8 +123,11 @@ struct ContentView: View {
                 .help(sortNewestFirst ? "Newest first" : "Oldest first")
             }
 
-            RecentEntriesView(entries: sortNewestFirst ? recentEntries : recentEntries.reversed())
-                .frame(maxHeight: .infinity)
+            RecentEntriesView(
+                entries: sortNewestFirst ? recentEntries : recentEntries.reversed(),
+                onEdit: { entry in startEdit(entry) }
+            )
+            .frame(maxHeight: .infinity)
 
             Divider()
 
@@ -118,8 +148,22 @@ struct ContentView: View {
         .onChange(of: tagPrefix) { _, _ in
             tagSelectedIndex = 0
         }
-        .onChange(of: selectedJournal) { _, _ in
-            Task { await loadData() }
+        .onChange(of: selectedJournal) { _, newJournal in
+            let journal = newJournal
+            Task { await loadData(for: journal) }
+        }
+        .alert("Unsaved Changes", isPresented: $showUnsavedAlert) {
+            Button("Discard", role: .destructive) {
+                if let pending = pendingEditEntry {
+                    loadEntryForEdit(pending)
+                    pendingEditEntry = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingEditEntry = nil
+            }
+        } message: {
+            Text("You have unsaved text in the editor. Discard it and load the selected entry?")
         }
     }
 
@@ -151,18 +195,62 @@ struct ContentView: View {
         tagPrefix = ""
     }
 
+    private func startEdit(_ entry: JournalEntry) {
+        let hasUnsavedText = !entryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if hasUnsavedText {
+            pendingEditEntry = entry
+            showUnsavedAlert = true
+        } else {
+            loadEntryForEdit(entry)
+        }
+    }
+
+    private func loadEntryForEdit(_ entry: JournalEntry) {
+        editingEntry = entry
+        editingJournal = selectedJournal
+        entryText = entry.fullText
+    }
+
+    private func cancelEdit() {
+        editingEntry = nil
+        editingJournal = nil
+        entryText = ""
+    }
+
     private func submit() {
         let text = entryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isSubmitting else { return }
         isSubmitting = true
         statusMessage = ""
 
+        let currentEditEntry = editingEntry
+        let currentEditJournal = editingJournal
+        let submitJournal = currentEditJournal ?? selectedJournal
+
         Task {
             do {
-                try await service.submitEntry(text, journal: selectedJournal)
+                if let original = currentEditEntry, let editJournal = currentEditJournal {
+                    // Delete the old entry from its original journal, then re-add with original timestamp
+                    try await service.deleteEntry(
+                        containing: original.title,
+                        on: original.date,
+                        journal: editJournal
+                    )
+                    try await service.submitEntry(
+                        text,
+                        journal: editJournal,
+                        date: original.date,
+                        time: original.time
+                    )
+                    editingEntry = nil
+                    editingJournal = nil
+                    statusMessage = "Updated"
+                } else {
+                    try await service.submitEntry(text, journal: selectedJournal)
+                    statusMessage = "Saved"
+                }
                 entryText = ""
-                statusMessage = "Saved"
-                await loadData()
+                await loadData(for: submitJournal)
                 try? await Task.sleep(for: .seconds(2))
                 statusMessage = ""
             } catch {
@@ -181,9 +269,10 @@ struct ContentView: View {
         }
     }
 
-    private func loadData() async {
-        async let tagResult = try? service.fetchTags(journal: selectedJournal)
-        async let entryResult = try? service.fetchRecentEntries(journal: selectedJournal)
+    private func loadData(for journal: String? = nil) async {
+        let j = journal ?? selectedJournal
+        async let tagResult = try? service.fetchTags(journal: j)
+        async let entryResult = try? service.fetchRecentEntries(journal: j)
         let (t, e) = await (tagResult, entryResult)
         if let t { tags = t }
         if let e { recentEntries = e }

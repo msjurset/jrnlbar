@@ -8,9 +8,20 @@ let package = Package(
         .macOS(.v14)
     ],
     targets: [
+        .target(
+            name: "JrnlBarLib",
+            path: "Sources/JrnlBar",
+            exclude: ["JrnlBarApp.swift"]
+        ),
         .executableTarget(
             name: "JrnlBar",
-            path: "Sources/JrnlBar"
+            dependencies: ["JrnlBarLib"],
+            path: "Sources/JrnlBarMain"
+        ),
+        .executableTarget(
+            name: "JrnlBarTests",
+            dependencies: ["JrnlBarLib"],
+            path: "Tests/JrnlBarTests"
         )
     ]
 )

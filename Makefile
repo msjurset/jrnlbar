@@ -8,7 +8,7 @@ LAUNCH_AGENT_DIR = $(HOME)/Library/LaunchAgents
 LAUNCH_AGENT_LABEL = com.local.JrnlBar
 DMG_NAME = $(PRODUCT).dmg
 
-.PHONY: build app install dmg uninstall clean run
+.PHONY: build app install dmg uninstall clean run test
 
 build:
 	@echo "Building $(PRODUCT)..."
@@ -57,6 +57,10 @@ clean:
 	@echo "Cleaning..."
 	@rm -rf "$(BUILD_DIR)" "$(APP_BUNDLE)" "$(DMG_NAME)" dmg_staging
 	@echo "Done."
+
+test:
+	@echo "Running tests..."
+	@swift run JrnlBarTests
 
 run: app
 	@pkill -9 -f "$(PRODUCT)" 2>/dev/null || true
