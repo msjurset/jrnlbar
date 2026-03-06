@@ -1,0 +1,6 @@
+.build/
+JrnlBar.app/
+JrnlBar.dmg
+dmg_staging/
+.DS_Store
+.swiftpm/

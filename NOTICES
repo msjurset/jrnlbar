@@ -1,0 +1,22 @@
+NOTICES AND ATTRIBUTIONS
+
+JrnlBar
+Copyright (c) 2026 Mark Sjurseth
+Licensed under the MIT License. See LICENSE for details.
+
+---
+
+This application uses the following technologies and frameworks:
+
+## Apple Frameworks (macOS SDK)
+- AppKit — Copyright Apple Inc. All rights reserved.
+- SwiftUI — Copyright Apple Inc. All rights reserved.
+- Carbon.HIToolbox — Copyright Apple Inc. All rights reserved.
+  Used under the macOS SDK license agreement.
+
+## jrnl
+- https://jrnl.sh
+- Copyright jrnl contributors
+- Licensed under the GNU General Public License v3.0
+  JrnlBar is a graphical frontend that invokes jrnl as an external CLI tool.
+  It does not link against or include any jrnl source code.
