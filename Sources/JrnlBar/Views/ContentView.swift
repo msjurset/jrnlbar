@@ -1,7 +1,10 @@
 import SwiftUI
+import UserNotifications
 
 public struct ContentView: View {
-    public init() {}
+    public init() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+    }
 
     @State private var entryText = ""
     @State private var tags: [Tag] = []
@@ -15,6 +18,7 @@ public struct ContentView: View {
     @State private var editingJournal: String?
     @State private var pendingEditEntry: JournalEntry?
     @State private var showUnsavedAlert = false
+    @State private var filterTag: String?
     @AppStorage("sortNewestFirst") private var sortNewestFirst = true
     @AppStorage("selectedJournal") private var selectedJournal = "default"
 
@@ -41,6 +45,12 @@ public struct ContentView: View {
     }
 
     private var isEditing: Bool { editingEntry != nil }
+
+    private var displayedEntries: [JournalEntry] {
+        let sorted = sortNewestFirst ? recentEntries : recentEntries.reversed()
+        guard let tag = filterTag else { return sorted }
+        return sorted.filter { $0.tags.contains(tag) }
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -123,9 +133,30 @@ public struct ContentView: View {
                 .help(sortNewestFirst ? "Newest first" : "Oldest first")
             }
 
+            if let tag = filterTag {
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .font(.caption2)
+                        .foregroundStyle(.teal)
+                    Text(tag)
+                        .font(.caption)
+                        .foregroundStyle(.teal)
+                    Button(action: { filterTag = nil }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+            }
+
             RecentEntriesView(
-                entries: sortNewestFirst ? recentEntries : recentEntries.reversed(),
-                onEdit: { entry in startEdit(entry) }
+                entries: displayedEntries,
+                onEdit: { entry in startEdit(entry) },
+                onTagTap: { tag in filterTag = filterTag == tag ? nil : tag }
             )
             .frame(maxHeight: .infinity)
 
@@ -230,24 +261,38 @@ public struct ContentView: View {
         Task {
             do {
                 if let original = currentEditEntry, let editJournal = currentEditJournal {
-                    // Delete the old entry from its original journal, then re-add with original timestamp
+                    // Delete old entry, then add updated one
+                    // If the add fails, rollback by re-adding the original
                     try await service.deleteEntry(
                         containing: original.title,
                         on: original.date,
                         journal: editJournal
                     )
-                    try await service.submitEntry(
-                        text,
-                        journal: editJournal,
-                        date: original.date,
-                        time: original.time
-                    )
+                    do {
+                        try await service.submitEntry(
+                            text,
+                            journal: editJournal,
+                            date: original.date,
+                            time: original.time
+                        )
+                    } catch {
+                        // Rollback: restore original entry
+                        try? await service.submitEntry(
+                            original.fullText,
+                            journal: editJournal,
+                            date: original.date,
+                            time: original.time
+                        )
+                        throw error
+                    }
                     editingEntry = nil
                     editingJournal = nil
                     statusMessage = "Updated"
+                    sendNotification("Entry updated in \(editJournal)")
                 } else {
                     try await service.submitEntry(text, journal: selectedJournal)
                     statusMessage = "Saved"
+                    sendNotification("Entry saved to \(selectedJournal)")
                 }
                 entryText = ""
                 await loadData(for: submitJournal)
@@ -267,6 +312,14 @@ public struct ContentView: View {
                 selectedJournal = j[0]
             }
         }
+    }
+
+    private func sendNotification(_ body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "JrnlBar"
+        content.body = body
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 
     private func loadData(for journal: String? = nil) async {

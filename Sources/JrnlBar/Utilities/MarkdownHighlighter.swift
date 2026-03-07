@@ -68,6 +68,9 @@ class MarkdownHighlighter: NSObject, NSTextStorageDelegate {
         super.init()
     }
 
+    private let titleFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+    private let titleSeparatorColor = NSColor.separatorColor
+
     func textStorage(
         _ textStorage: NSTextStorage,
         didProcessEditing editedMask: NSTextStorageEditActions,
@@ -83,6 +86,23 @@ class MarkdownHighlighter: NSObject, NSTextStorageDelegate {
         textStorage.addAttribute(.font, value: baseFont, range: fullRange)
         textStorage.addAttribute(.foregroundColor, value: baseForeground, range: fullRange)
         textStorage.removeAttribute(.backgroundColor, range: fullRange)
+        textStorage.removeAttribute(.underlineStyle, range: fullRange)
+        textStorage.removeAttribute(.underlineColor, range: fullRange)
+
+        // Title detection: jrnl uses the first sentence (ending with . ? !) as the title
+        if let titleEnd = findTitleEnd(in: string) {
+            let titleRange = NSRange(location: 0, length: titleEnd)
+            textStorage.addAttribute(.font, value: titleFont, range: titleRange)
+
+            // Add a subtle underline on the last character of the title line to hint at the boundary
+            // Instead, use paragraph spacing — add extra space after the title's paragraph
+            if let lineEnd = findEndOfLine(at: titleEnd - 1, in: string) {
+                let paraStyle = NSMutableParagraphStyle()
+                paraStyle.paragraphSpacing = 6
+                let lineRange = NSRange(location: 0, length: lineEnd)
+                textStorage.addAttribute(.paragraphStyle, value: paraStyle, range: lineRange)
+            }
+        }
 
         // Apply each pattern
         for (regex, apply) in patterns {
@@ -91,5 +111,33 @@ class MarkdownHighlighter: NSObject, NSTextStorageDelegate {
                 apply(textStorage, fullRange, match)
             }
         }
+    }
+
+    /// Find the end of the title — the position after the first sentence-ending punctuation (. ? !)
+    private func findTitleEnd(in string: String) -> Int? {
+        let nsString = string as NSString
+        guard nsString.length > 0 else { return nil }
+
+        for i in 0..<nsString.length {
+            let ch = nsString.character(at: i)
+            guard let scalar = Unicode.Scalar(ch) else { continue }
+            if scalar == "." || scalar == "?" || scalar == "!" {
+                return i + 1
+            }
+            // If we hit a newline before any sentence ender, the whole first line is the title
+            if scalar == "\n" {
+                return i
+            }
+        }
+        // No sentence ender found — everything typed so far is the title
+        return nsString.length
+    }
+
+    /// Find the end of the line containing the given character index
+    private func findEndOfLine(at index: Int, in string: String) -> Int? {
+        let nsString = string as NSString
+        guard index < nsString.length else { return nsString.length }
+        let lineRange = nsString.lineRange(for: NSRange(location: index, length: 0))
+        return lineRange.location + lineRange.length
     }
 }

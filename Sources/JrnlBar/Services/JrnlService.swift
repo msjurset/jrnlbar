@@ -42,25 +42,27 @@ public enum JrnlParser {
     }
 }
 
-actor JrnlService {
+public actor JrnlService {
     private let jrnlPath = "/opt/homebrew/bin/jrnl"
 
-    func fetchJournals() throws -> [String] {
+    public init() {}
+
+    public func fetchJournals() throws -> [String] {
         let output = try run(arguments: ["--list"])
         return JrnlParser.parseJournals(from: output)
     }
 
-    func fetchTags(journal: String) throws -> [Tag] {
+    public func fetchTags(journal: String) throws -> [Tag] {
         let output = try run(arguments: [journal, "--tags"])
         return JrnlParser.parseTags(from: output)
     }
 
-    func fetchRecentEntries(journal: String, count: Int = 10) throws -> [JournalEntry] {
+    public func fetchRecentEntries(journal: String, count: Int = 10) throws -> [JournalEntry] {
         let output = try run(arguments: [journal, "--format", "json", "-n", "\(count)"])
         return try JrnlParser.parseEntries(from: output)
     }
 
-    func deleteEntry(containing title: String, on date: String, journal: String) throws {
+    public func deleteEntry(containing title: String, on date: String, journal: String) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: jrnlPath)
         process.arguments = [journal, "--delete", "-on", date, "-contains", title]
@@ -87,7 +89,7 @@ actor JrnlService {
         }
     }
 
-    func submitEntry(_ text: String, journal: String, date: String? = nil, time: String? = nil) throws {
+    public func submitEntry(_ text: String, journal: String, date: String? = nil, time: String? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: jrnlPath)
         process.arguments = [journal]

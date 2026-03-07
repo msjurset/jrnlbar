@@ -23,6 +23,78 @@ private func hotkeyCallback(
     return noErr
 }
 
+// MARK: - Services provider
+
+class ServicesProvider: NSObject {
+    private let service = JrnlService()
+
+    @objc func addToJrnl(_ pboard: NSPasteboard, userData: String, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        guard let text = pboard.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        let journal = UserDefaults.standard.string(forKey: "selectedJournal") ?? "default"
+        Task {
+            try? await service.submitEntry(text, journal: journal)
+        }
+    }
+}
+
+// MARK: - Launch agent helper
+
+enum LaunchAgent {
+    private static let label = "com.local.JrnlBar"
+    private static var plistPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/LaunchAgents/\(label).plist"
+    }
+
+    static var isEnabled: Bool {
+        FileManager.default.fileExists(atPath: plistPath)
+    }
+
+    static func setEnabled(_ enabled: Bool) {
+        let uid = getuid()
+        if enabled {
+            // Install launch agent
+            let appPath = Bundle.main.executablePath ?? "/Applications/JrnlBar.app/Contents/MacOS/JrnlBar"
+            let plist = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key>
+                <string>\(label)</string>
+                <key>ProgramArguments</key>
+                <array>
+                    <string>\(appPath)</string>
+                </array>
+                <key>RunAtLoad</key>
+                <true/>
+                <key>KeepAlive</key>
+                <false/>
+            </dict>
+            </plist>
+            """
+            try? plist.write(toFile: plistPath, atomically: true, encoding: .utf8)
+            // Bootstrap the agent
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = ["bootstrap", "gui/\(uid)", plistPath]
+            try? process.run()
+            process.waitUntilExit()
+        } else {
+            // Bootout and remove
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = ["bootout", "gui/\(uid)/\(label)"]
+            try? process.run()
+            process.waitUntilExit()
+            try? FileManager.default.removeItem(atPath: plistPath)
+        }
+    }
+}
+
 // Singleton controller — avoids dependency on NSApp.delegate
 final class AppController {
     static let shared = AppController()
@@ -32,11 +104,13 @@ final class AppController {
     private var hotkeyRef: EventHotKeyRef?
     private var globalClickMonitor: Any?
     private var escapeMonitor: Any?
+    private let servicesProvider = ServicesProvider()
 
     func setup() {
         setupStatusItem()
         panel = FloatingPanel(contentView: ContentView())
         registerHotkey()
+        registerServices()
     }
 
     private func setupStatusItem() {
@@ -61,6 +135,11 @@ final class AppController {
             UInt32(kVK_ANSI_J), UInt32(shiftKey | cmdKey), hotkeyID,
             GetApplicationEventTarget(), 0, &hotkeyRef
         )
+    }
+
+    private func registerServices() {
+        NSApp.servicesProvider = servicesProvider
+        NSUpdateDynamicServices()
     }
 
     @objc private func handleClick(_ sender: NSStatusBarButton) {
@@ -100,10 +179,24 @@ final class AppController {
 
     private func showContextMenu(_ sender: NSStatusBarButton) {
         let menu = NSMenu()
+
+        let launchItem = NSMenuItem(
+            title: "Launch at Login",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: ""
+        )
+        launchItem.target = self
+        launchItem.state = LaunchAgent.isEnabled ? .on : .off
+        menu.addItem(launchItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let aboutItem = NSMenuItem(title: "About JrnlBar", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
+
         menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -111,6 +204,10 @@ final class AppController {
         statusItem.menu = menu
         sender.performClick(nil)
         statusItem.menu = nil
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        LaunchAgent.setEnabled(!LaunchAgent.isEnabled)
     }
 
     @objc private func showAbout() {

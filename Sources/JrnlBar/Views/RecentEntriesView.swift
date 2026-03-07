@@ -1,8 +1,10 @@
 import SwiftUI
+import AppKit
 
 struct RecentEntriesView: View {
     let entries: [JournalEntry]
     var onEdit: ((JournalEntry) -> Void)?
+    var onTagTap: ((String) -> Void)?
     @State private var expandedID: String?
 
     var body: some View {
@@ -18,7 +20,8 @@ struct RecentEntriesView: View {
                         EntryRow(
                             entry: entry,
                             isExpanded: expandedID == entry.id,
-                            onEdit: onEdit
+                            onEdit: onEdit,
+                            onTagTap: onTagTap
                         )
                         .onTapGesture {
                             expandedID = expandedID == entry.id ? nil : entry.id
@@ -34,6 +37,7 @@ private struct EntryRow: View {
     let entry: JournalEntry
     let isExpanded: Bool
     var onEdit: ((JournalEntry) -> Void)?
+    var onTagTap: ((String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -69,9 +73,15 @@ private struct EntryRow: View {
             }
 
             if isExpanded && !entry.body.isEmpty {
-                highlightedBody(entry.body)
+                Text(highlightedBody(entry.body))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .environment(\.openURL, OpenURLAction { url in
+                        if url.scheme == "jrnltag", let tag = url.host {
+                            onTagTap?("@\(tag)")
+                        }
+                        return .handled
+                    })
             }
         }
         .padding(.horizontal, 10)
@@ -81,29 +91,22 @@ private struct EntryRow: View {
         .contentShape(Rectangle())
     }
 
-    private func highlightedBody(_ text: String) -> Text {
-        guard let regex = try? NSRegularExpression(pattern: "@\\w+") else {
-            return Text(text)
+    private func highlightedBody(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard let regex = try? NSRegularExpression(pattern: "@(\\w+)") else {
+            return attributed
         }
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
 
-        var result = Text("")
-        var lastEnd = 0
-
-        for match in matches {
-            let beforeRange = NSRange(location: lastEnd, length: match.range.location - lastEnd)
-            if beforeRange.length > 0 {
-                result = result + Text(nsText.substring(with: beforeRange))
-            }
-            result = result + Text(nsText.substring(with: match.range)).foregroundColor(.teal)
-            lastEnd = match.range.location + match.range.length
+        for match in matches.reversed() {
+            guard let swiftRange = Range(match.range, in: text) else { continue }
+            let attrRange = AttributedString.Index(swiftRange.lowerBound, within: attributed)!
+                ..< AttributedString.Index(swiftRange.upperBound, within: attributed)!
+            let tagName = nsText.substring(with: match.range(at: 1))
+            attributed[attrRange].foregroundColor = .systemTeal
+            attributed[attrRange].link = URL(string: "jrnltag://\(tagName)")
         }
-
-        let tailRange = NSRange(location: lastEnd, length: nsText.length - lastEnd)
-        if tailRange.length > 0 {
-            result = result + Text(nsText.substring(with: tailRange))
-        }
-        return result
+        return attributed
     }
 }
