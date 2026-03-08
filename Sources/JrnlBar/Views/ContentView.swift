@@ -176,6 +176,12 @@ public struct ContentView: View {
             await loadJournals()
             await loadData()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("panelDidOpen"))) { _ in
+            Task {
+                await loadJournals()
+                await loadData()
+            }
+        }
         .onChange(of: tagPrefix) { _, _ in
             tagSelectedIndex = 0
         }
@@ -324,10 +330,10 @@ public struct ContentView: View {
 
     private func loadData(for journal: String? = nil) async {
         let j = journal ?? selectedJournal
-        async let tagResult = try? service.fetchTags(journal: j)
-        async let entryResult = try? service.fetchRecentEntries(journal: j)
+        async let tagResult: [Tag]? = try? service.fetchTags(journal: j)
+        async let entryResult: [JournalEntry]? = try? service.fetchRecentEntries(journal: j)
         let (t, e) = await (tagResult, entryResult)
-        if let t { tags = t }
-        if let e { recentEntries = e }
+        tags = t ?? []
+        recentEntries = e ?? []
     }
 }

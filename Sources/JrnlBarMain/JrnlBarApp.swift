@@ -169,6 +169,7 @@ final class AppController {
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         panel.showAnimated()
         installMonitors()
+        NotificationCenter.default.post(name: .panelDidOpen, object: nil)
     }
 
     private func closePanel() {
@@ -249,6 +250,12 @@ enum JrnlBarApp {
 
         app.run()
     }
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    static let panelDidOpen = Notification.Name("panelDidOpen")
 }
 
 // MARK: - Styled floating panel

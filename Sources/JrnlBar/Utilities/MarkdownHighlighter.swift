@@ -79,36 +79,37 @@ class MarkdownHighlighter: NSObject, NSTextStorageDelegate {
     ) {
         guard editedMask.contains(.editedCharacters) else { return }
 
-        let fullRange = NSRange(location: 0, length: textStorage.length)
-        let string = textStorage.string
+        let string = textStorage.string as NSString
+        let extendedRange = string.paragraphRange(for: editedRange)
 
-        // Reset to base style
-        textStorage.addAttribute(.font, value: baseFont, range: fullRange)
-        textStorage.addAttribute(.foregroundColor, value: baseForeground, range: fullRange)
-        textStorage.removeAttribute(.backgroundColor, range: fullRange)
-        textStorage.removeAttribute(.underlineStyle, range: fullRange)
-        textStorage.removeAttribute(.underlineColor, range: fullRange)
+        // Reset to base style for the affected paragraph
+        textStorage.addAttribute(.font, value: baseFont, range: extendedRange)
+        textStorage.addAttribute(.foregroundColor, value: baseForeground, range: extendedRange)
+        textStorage.removeAttribute(.backgroundColor, range: extendedRange)
+        // Note: do NOT remove .underlineStyle/.underlineColor here —
+        // the spell checker uses those attributes for red squiggly underlines
 
         // Title detection: jrnl uses the first sentence (ending with . ? !) as the title
-        if let titleEnd = findTitleEnd(in: string) {
-            let titleRange = NSRange(location: 0, length: titleEnd)
-            textStorage.addAttribute(.font, value: titleFont, range: titleRange)
+        if extendedRange.location == 0 {
+            if let titleEnd = findTitleEnd(in: textStorage.string) {
+                let titleRange = NSRange(location: 0, length: titleEnd)
+                textStorage.addAttribute(.font, value: titleFont, range: titleRange)
 
-            // Add a subtle underline on the last character of the title line to hint at the boundary
-            // Instead, use paragraph spacing — add extra space after the title's paragraph
-            if let lineEnd = findEndOfLine(at: titleEnd - 1, in: string) {
-                let paraStyle = NSMutableParagraphStyle()
-                paraStyle.paragraphSpacing = 6
-                let lineRange = NSRange(location: 0, length: lineEnd)
-                textStorage.addAttribute(.paragraphStyle, value: paraStyle, range: lineRange)
+                // Instead, use paragraph spacing — add extra space after the title's paragraph
+                if let lineEnd = findEndOfLine(at: titleEnd - 1, in: textStorage.string) {
+                    let paraStyle = NSMutableParagraphStyle()
+                    paraStyle.paragraphSpacing = 6
+                    let lineRange = NSRange(location: 0, length: lineEnd)
+                    textStorage.addAttribute(.paragraphStyle, value: paraStyle, range: lineRange)
+                }
             }
         }
 
-        // Apply each pattern
+        // Apply each pattern to the affected paragraph
         for (regex, apply) in patterns {
-            regex.enumerateMatches(in: string, options: [], range: fullRange) { match, _, _ in
+            regex.enumerateMatches(in: textStorage.string, options: [], range: extendedRange) { match, _, _ in
                 guard let match = match else { return }
-                apply(textStorage, fullRange, match)
+                apply(textStorage, extendedRange, match)
             }
         }
     }
