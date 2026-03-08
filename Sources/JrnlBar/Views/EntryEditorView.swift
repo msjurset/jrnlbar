@@ -46,6 +46,7 @@ struct EntryEditorView: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
+        textView.enabledTextCheckingTypes = NSTextCheckingResult.CheckingType.spelling.rawValue | NSTextCheckingResult.CheckingType.grammar.rawValue
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.drawsBackground = true
         textView.backgroundColor = .textBackgroundColor
