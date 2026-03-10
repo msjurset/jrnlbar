@@ -5,6 +5,7 @@ struct EntryEditorView: NSViewRepresentable {
     @Binding var text: String
     @Binding var tagPrefix: String  // Current @partial text, empty when no tag context
     var onSubmit: () -> Void
+    var onOpenExternal: (() -> Void)?
     var onTagKeyEvent: (TagKeyEvent) -> Bool  // Returns true if handled
 
     enum TagKeyEvent {
@@ -58,6 +59,7 @@ struct EntryEditorView: NSViewRepresentable {
         textView.delegate = context.coordinator
         let coordinator = context.coordinator
         textView.submitHandler = { coordinator.parent.onSubmit() }
+        textView.openExternalHandler = { coordinator.parent.onOpenExternal?() }
         textView.tagKeyHandler = { event in coordinator.parent.onTagKeyEvent(event) }
         textView.isShowingTags = { !coordinator.parent.tagPrefix.isEmpty }
         context.coordinator.textView = textView
@@ -137,6 +139,7 @@ struct EntryEditorView: NSViewRepresentable {
 
 class JrnlTextView: NSTextView {
     var submitHandler: (() -> Void)?
+    var openExternalHandler: (() -> Void)?
     var tagKeyHandler: ((EntryEditorView.TagKeyEvent) -> Bool)?
     var isShowingTags: (() -> Bool)?
 
@@ -155,6 +158,9 @@ class JrnlTextView: NSTextView {
             case "a":
                 selectAll(nil)
                 return true
+            case "e":
+                openExternalHandler?()
+                return true
             case "z":
                 if event.modifierFlags.contains(.shift) {
                     undoManager?.redo()
@@ -170,9 +176,13 @@ class JrnlTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        // Cmd+Enter → submit
+        // Cmd+Enter and Option-Cmd-Enter
         if event.modifierFlags.contains(.command) && event.keyCode == 36 {
-            submitHandler?()
+            if event.modifierFlags.contains(.option) {
+                openExternalHandler?()
+            } else {
+                submitHandler?()
+            }
             return
         }
 

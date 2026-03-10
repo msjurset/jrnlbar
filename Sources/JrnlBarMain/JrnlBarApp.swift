@@ -111,6 +111,17 @@ final class AppController {
         panel = FloatingPanel(contentView: ContentView())
         registerHotkey()
         registerServices()
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(handleClosePanelRequest), name: .closePanel, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleOpenPanelRequest), name: .openPanel, object: nil)
+    }
+
+    @objc private func handleClosePanelRequest() {
+        closePanel()
+    }
+    
+    @objc private func handleOpenPanelRequest() {
+        openPanel()
     }
 
     private func setupStatusItem() {
@@ -244,6 +255,10 @@ enum JrnlBarApp {
     static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+
+        // Force enable spell and grammar checking regardless of past app-specific settings
+        UserDefaults.standard.set(true, forKey: "NSGrammarCheckingEnabled")
+        UserDefaults.standard.set(true, forKey: "NSContinuousSpellCheckingEnabled")
 
         // Set up everything before the run loop starts
         AppController.shared.setup()

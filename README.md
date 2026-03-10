@@ -14,6 +14,7 @@ A macOS menu bar app for quickly adding journal entries via the [jrnl](https://j
 - **Tag autocomplete** — type `@` to see suggestions from your existing tags, navigate with arrow keys
 - **Tag filtering** — click any @tag in an expanded entry to filter the list to that tag
 - **Edit entries** — click the pencil icon on an expanded entry to edit it in place, with rollback safety
+- **External editor** — pop out your draft to any text editor (iA Writer, VS Code, etc.) and it flows back automatically
 - **Multiple journals** — switch between configured jrnl journals (e.g., default/work)
 - **Recent entries** — view and expand your last 10 entries, with sort direction toggle
 - **Global hotkey** — `Shift+Cmd+J` to toggle from anywhere (no Accessibility permission needed)
@@ -53,7 +54,27 @@ This builds a release binary, assembles the `.app` bundle, installs to `/Applica
 4. Switch journals by clicking the journal name in the submit bar
 5. Click any @tag in an expanded entry to filter the list
 6. Click the pencil icon on an expanded entry to edit it
-7. Right-click the icon for Launch at Login / About / Quit
+7. Click the pop-out button or press `Option+Cmd+Enter` (or `Cmd+E`) to edit your draft in an external text editor
+8. Right-click the icon for Launch at Login / About / Quit
+
+### External Editor
+
+JrnlBar allows you to compose entries in your favorite external text editor. When you press `Option+Cmd+Enter` or click the pop-out button, JrnlBar will save your current draft to a temporary file, hide itself, and launch the editor. Once you close the editor window, JrnlBar will automatically read your changes and reappear.
+
+By default, JrnlBar opens the temporary file using your system's default text editor (e.g., TextEdit). 
+
+If you prefer to specify a custom application (like iA Writer, VS Code, or Obsidian), you can set the `externalEditorBundleID` preference via Terminal. You will need the Bundle Identifier of the app (e.g., `pro.writer.mac` for iA Writer).
+
+```bash
+# Example: Use iA Writer
+defaults write com.local.JrnlBar externalEditorBundleID "pro.writer.mac"
+
+# Example: Use VS Code
+defaults write com.local.JrnlBar externalEditorBundleID "com.microsoft.VSCode"
+
+# To revert to the system default text editor
+defaults delete com.local.JrnlBar externalEditorBundleID
+```
 
 ### Keyboard shortcuts
 
@@ -61,6 +82,7 @@ This builds a release binary, assembles the `.app` bundle, installs to `/Applica
 |---|---|
 | `Shift+Cmd+J` | Toggle panel (global) |
 | `Cmd+Enter` | Submit entry |
+| `Option+Cmd+Enter` (or `Cmd+E`) | Open in external editor |
 | `Cmd+V/C/X/A/Z` | Paste / Copy / Cut / Select All / Undo |
 | `Escape` | Close panel / dismiss tag suggestions |
 | `↑` `↓` | Navigate tag suggestions |

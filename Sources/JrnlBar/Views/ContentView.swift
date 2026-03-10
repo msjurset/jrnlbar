@@ -1,6 +1,11 @@
 import SwiftUI
 import UserNotifications
 
+extension Notification.Name {
+    public static let closePanel = Notification.Name("closePanel")
+    public static let openPanel = Notification.Name("openPanel")
+}
+
 public struct ContentView: View {
     public init() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
@@ -21,6 +26,7 @@ public struct ContentView: View {
     @State private var filterTag: String?
     @AppStorage("sortNewestFirst") private var sortNewestFirst = true
     @AppStorage("selectedJournal") private var selectedJournal = "default"
+    @AppStorage("externalEditorBundleID") private var externalEditorBundleID = ""
 
     private let service = JrnlService()
 
@@ -29,11 +35,21 @@ public struct ContentView: View {
             text: $entryText,
             tagPrefix: $tagPrefix,
             onSubmit: { submit() },
+            onOpenExternal: { openInExternalEditor() },
             onTagKeyEvent: { event in
                 handleTagKey(event)
             }
         )
         .frame(height: 150)
+        .overlay(alignment: .topTrailing) {
+            Button(action: openInExternalEditor) {
+                Image(systemName: "arrow.up.forward.app")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.secondary.opacity(0.6))
+            .padding(10)
+            .help("Open in External Editor (Option+Cmd+Enter or Cmd+E)")
+        }
     }
 
     private var tagSuggestion: TagSuggestionView {
@@ -317,6 +333,45 @@ public struct ContentView: View {
             if !j.contains(selectedJournal) {
                 selectedJournal = j[0]
             }
+        }
+    }
+
+    private func openInExternalEditor() {
+        let tempDir = FileManager.default.temporaryDirectory
+        let tempFileURL = tempDir.appendingPathComponent("jrnl_entry_\(UUID().uuidString).md")
+        
+        do {
+            try entryText.write(to: tempFileURL, atomically: true, encoding: .utf8)
+        } catch {
+            statusMessage = "Failed to create temp file"
+            return
+        }
+        
+        NotificationCenter.default.post(name: .closePanel, object: nil)
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        
+        if externalEditorBundleID.isEmpty {
+            process.arguments = ["-W", "-n", "-t", tempFileURL.path]
+        } else {
+            process.arguments = ["-W", "-n", "-b", externalEditorBundleID, tempFileURL.path]
+        }
+        
+        process.terminationHandler = { _ in
+            Task { @MainActor in
+                if let updatedText = try? String(contentsOf: tempFileURL, encoding: .utf8) {
+                    self.entryText = updatedText
+                }
+                try? FileManager.default.removeItem(at: tempFileURL)
+                NotificationCenter.default.post(name: .openPanel, object: nil)
+            }
+        }
+        
+        do {
+            try process.run()
+        } catch {
+            statusMessage = "Failed to open editor"
         }
     }
 
