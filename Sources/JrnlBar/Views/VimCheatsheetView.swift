@@ -8,8 +8,11 @@ struct VimCheatsheetView: View {
                     row("h j k l", "left / down / up / right (visual lines)")
                     row("w / b", "start of next / previous word")
                     row("e / ge", "end of current / previous word")
+                    row("W B E", "WORD variants (whitespace-only separators)")
                     row("0 / ^", "line start / first non-blank")
                     row("$", "line end")
+                    row("{ / }", "previous / next paragraph (blank line)")
+                    row("%", "matching ( ) [ ] { } bracket")
                     row("gg / G", "top / bottom of buffer")
                     row("arrows", "same as h j k l")
                     row("Nx", "count prefix repeats: 5w, 3l, 2dd…")
@@ -61,6 +64,9 @@ struct VimCheatsheetView: View {
                 }
                 section("Repeat") {
                     row(".", "repeat last text-changing command")
+                }
+                section("Other") {
+                    row("~", "toggle case of character under cursor")
                 }
                 section("Yank & paste") {
                     row("yy", "yank current line (Nyy for N lines)")

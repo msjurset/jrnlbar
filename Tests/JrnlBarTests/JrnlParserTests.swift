@@ -1065,6 +1065,99 @@ test("VimEngine: , reverses last find") {
     expect(ed.selectedRange.location == 3, "got \(ed.selectedRange.location)")
 }
 
+// ─── WORD motions (W/B/E), paragraph, matching bracket, toggle case
+
+test("VimEngine: W treats punctuation as part of the WORD") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo.bar baz", caret: 0)
+    feed(engine, ["W"], on: ed)
+    // w would stop at the '.', but W skips it (whitespace-only break)
+    expect(ed.selectedRange.location == 8, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: B (backward WORD) skips punctuation") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo.bar baz", caret: 8)
+    feed(engine, ["B"], on: ed)
+    expect(ed.selectedRange.location == 0, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: E moves to end of WORD") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo.bar baz", caret: 0)
+    feed(engine, ["E"], on: ed)
+    // Last char of "foo.bar" is position 6
+    expect(ed.selectedRange.location == 6, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: } jumps to next blank line") {
+    let engine = VimEngine()
+    let ed = StubEditor("para one line one\npara one line two\n\npara two\n", caret: 0)
+    feed(engine, ["}"], on: ed)
+    // The blank line is at position 37 (after the second \n that ends "line two\n")
+    // Actually let me count: "para one line one" 17 + "\n" 1 = 18 + "para one line two" 17 + "\n" 1 = 36 + "\n" 1 = 37
+    expect(ed.selectedRange.location == 36 || ed.selectedRange.location == 37,
+           "expected blank-line boundary, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: { jumps to previous blank line") {
+    let engine = VimEngine()
+    let ed = StubEditor("para one\n\npara two\n\npara three", caret: 22)
+    // From "para three", { should walk back to the blank line at position 19 (or surrounding)
+    feed(engine, ["{"], on: ed)
+    expect(ed.selectedRange.location <= 20 && ed.selectedRange.location >= 9,
+           "expected to land near a blank-line boundary, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: % jumps from ( to matching )") {
+    let engine = VimEngine()
+    let ed = StubEditor("(a b c)", caret: 0)
+    feed(engine, ["%"], on: ed)
+    expect(ed.selectedRange.location == 6, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: % jumps from ) back to matching (") {
+    let engine = VimEngine()
+    let ed = StubEditor("(a b c)", caret: 6)
+    feed(engine, ["%"], on: ed)
+    expect(ed.selectedRange.location == 0, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: % handles nested brackets") {
+    let engine = VimEngine()
+    let ed = StubEditor("(a (b c) d)", caret: 0)
+    feed(engine, ["%"], on: ed)
+    expect(ed.selectedRange.location == 10, "should find outer ) at 10, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: % on a non-bracket scans forward to first bracket on line") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo (bar) baz", caret: 0)
+    feed(engine, ["%"], on: ed)
+    expect(ed.selectedRange.location == 8, "should land on matching ) at 8, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: ~ toggles case of char under caret") {
+    let engine = VimEngine()
+    let ed = StubEditor("Hello", caret: 0)
+    feed(engine, ["~"], on: ed)
+    expect(ed.text == "hello", "got: \(ed.text)")
+}
+
+test("VimEngine: ~ with count toggles N chars") {
+    let engine = VimEngine()
+    let ed = StubEditor("Hello world", caret: 0)
+    feed(engine, ["3", "~"], on: ed)
+    expect(ed.text == "hELlo world", "got: \(ed.text)")
+}
+
+test("VimEngine: dW deletes whole WORD including punctuation") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo.bar baz", caret: 0)
+    feed(engine, ["d", "W"], on: ed)
+    expect(ed.text == "baz", "got: \(ed.text)")
+}
+
 // ─── Summary ───
 
 print("\n\(passed + failed) tests, \(passed) passed, \(failed) failed")

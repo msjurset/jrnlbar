@@ -82,10 +82,13 @@ public final class VimEngine {
 
     private enum Motion {
         case left, right, up, down
-        case wordForward, wordBackward
-        case wordEnd, previousWordEnd
+        case wordForward, wordBackward, wordEnd, previousWordEnd
+        // Uppercase WORD variants (whitespace-only separators).
+        case bigWordForward, bigWordBackward, bigWordEnd
         case lineStart, lineEnd, lineFirstNonBlank
         case bufferStart, bufferEnd
+        case paragraphForward, paragraphBackward
+        case matchingBracket
     }
 
     public init() {}
@@ -221,8 +224,19 @@ public final class VimEngine {
         case "w": applyMotion(.wordForward, count: n, editor: editor)
         case "b": applyMotion(.wordBackward, count: n, editor: editor)
         case "e": applyMotion(.wordEnd, count: n, editor: editor)
+        case "W": applyMotion(.bigWordForward, count: n, editor: editor)
+        case "B": applyMotion(.bigWordBackward, count: n, editor: editor)
+        case "E": applyMotion(.bigWordEnd, count: n, editor: editor)
         case "$": applyMotion(.lineEnd, count: 1, editor: editor)
         case "^": applyMotion(.lineFirstNonBlank, count: 1, editor: editor)
+        case "{": applyMotion(.paragraphBackward, count: n, editor: editor)
+        case "}": applyMotion(.paragraphForward, count: n, editor: editor)
+        case "%": applyMotion(.matchingBracket, count: 1, editor: editor)
+        case "~":
+            toggleCaseAtCaret(count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.toggleCaseAtCaret(count: n, editor: ed)
+            }
         case "G": applyMotion(.bufferEnd, count: 1, editor: editor)
         case "g": pendingG = true
         case "i":
@@ -380,11 +394,17 @@ public final class VimEngine {
         case "w": return .wordForward
         case "b": return .wordBackward
         case "e": return .wordEnd
+        case "W": return .bigWordForward
+        case "B": return .bigWordBackward
+        case "E": return .bigWordEnd
         case "$": return .lineEnd
         case "0": return .lineStart
         case "^": return .lineFirstNonBlank
         case "h": return .left
         case "l": return .right
+        case "{": return .paragraphBackward
+        case "}": return .paragraphForward
+        case "%": return .matchingBracket
         default: return nil
         }
     }
@@ -394,7 +414,7 @@ public final class VimEngine {
     /// Exclusive motions stop one short.
     private func isInclusiveMotion(_ motion: Motion) -> Bool {
         switch motion {
-        case .wordEnd, .previousWordEnd: return true
+        case .wordEnd, .previousWordEnd, .bigWordEnd, .matchingBracket: return true
         default: return false
         }
     }
@@ -476,11 +496,17 @@ public final class VimEngine {
         case "w": applyVisualMotion(.wordForward, count: n, editor: editor)
         case "b": applyVisualMotion(.wordBackward, count: n, editor: editor)
         case "e": applyVisualMotion(.wordEnd, count: n, editor: editor)
+        case "W": applyVisualMotion(.bigWordForward, count: n, editor: editor)
+        case "B": applyVisualMotion(.bigWordBackward, count: n, editor: editor)
+        case "E": applyVisualMotion(.bigWordEnd, count: n, editor: editor)
         case "g": pendingG = true
         case "G": applyVisualMotion(.bufferEnd, count: 1, editor: editor)
         case "0": applyVisualMotion(.lineStart, count: 1, editor: editor)
         case "^": applyVisualMotion(.lineFirstNonBlank, count: 1, editor: editor)
         case "$": applyVisualMotion(.lineEnd, count: 1, editor: editor)
+        case "{": applyVisualMotion(.paragraphBackward, count: n, editor: editor)
+        case "}": applyVisualMotion(.paragraphForward, count: n, editor: editor)
+        case "%": applyVisualMotion(.matchingBracket, count: 1, editor: editor)
 
         // Operators — apply to the current selection.
         case "d", "x":
@@ -848,6 +874,28 @@ public final class VimEngine {
             var loc = cursor
             for _ in 0..<count { loc = previousWordEnd(in: nsText, from: loc) }
             return loc
+        case .bigWordForward:
+            var loc = cursor
+            for _ in 0..<count { loc = nextBigWordStart(in: nsText, from: loc) }
+            return loc
+        case .bigWordBackward:
+            var loc = cursor
+            for _ in 0..<count { loc = previousBigWordStart(in: nsText, from: loc) }
+            return loc
+        case .bigWordEnd:
+            var loc = cursor
+            for _ in 0..<count { loc = nextBigWordEnd(in: nsText, from: loc) }
+            return loc
+        case .paragraphForward:
+            var loc = cursor
+            for _ in 0..<count { loc = nextParagraph(in: nsText, from: loc) }
+            return loc
+        case .paragraphBackward:
+            var loc = cursor
+            for _ in 0..<count { loc = previousParagraph(in: nsText, from: loc) }
+            return loc
+        case .matchingBracket:
+            return matchingBracketLocation(in: nsText, from: cursor) ?? cursor
         case .lineStart:
             return lineStart(in: nsText, of: cursor)
         case .lineEnd:
@@ -1130,6 +1178,178 @@ public final class VimEngine {
         if ch >= 0x61 && ch <= 0x7A { return true }  // a-z
         if ch == 0x5F { return true }                // _
         return false
+    }
+
+    private func isWhitespace(_ ch: unichar) -> Bool {
+        return ch == 0x20 || ch == 0x09 || ch == 0x0A
+    }
+
+    // MARK: - WORD motions (whitespace-only separators)
+
+    /// `W` — start of next WORD.
+    private func nextBigWordStart(in text: NSString, from cursor: Int) -> Int {
+        var i = cursor
+        let len = text.length
+        // Skip current WORD chars.
+        while i < len, !isWhitespace(text.character(at: i)) { i += 1 }
+        // Skip whitespace to next WORD start.
+        while i < len, isWhitespace(text.character(at: i)) { i += 1 }
+        return i
+    }
+
+    /// `B` — start of previous WORD.
+    private func previousBigWordStart(in text: NSString, from cursor: Int) -> Int {
+        var i = cursor
+        if i > 0 { i -= 1 }
+        while i > 0, isWhitespace(text.character(at: i)) { i -= 1 }
+        while i > 0, !isWhitespace(text.character(at: i - 1)) { i -= 1 }
+        return i
+    }
+
+    /// `E` — end of current/next WORD.
+    private func nextBigWordEnd(in text: NSString, from cursor: Int) -> Int {
+        let len = text.length
+        var i = cursor
+        if i >= len { return len }
+        i += 1
+        while i < len, isWhitespace(text.character(at: i)) { i += 1 }
+        while i + 1 < len, !isWhitespace(text.character(at: i + 1)) { i += 1 }
+        return min(i, max(0, len - 1))
+    }
+
+    // MARK: - Paragraph motion
+
+    /// Position of next blank line (or buffer end). Vim's `}`.
+    private func nextParagraph(in text: NSString, from cursor: Int) -> Int {
+        let len = text.length
+        var i = cursor
+        // Skip current line.
+        i = lineEnd(in: text, of: i)
+        if i < len { i += 1 }
+        // Skip blank lines we might already be on.
+        while i < len, isLineBlank(in: text, at: i) {
+            i = lineEnd(in: text, of: i)
+            if i < len { i += 1 }
+        }
+        // Now on non-blank line. Walk forward until we hit a blank line
+        // or EOF.
+        while i < len, !isLineBlank(in: text, at: i) {
+            i = lineEnd(in: text, of: i)
+            if i < len { i += 1 } else { break }
+        }
+        return min(i, len)
+    }
+
+    /// Position of previous blank line (or buffer start). Vim's `{`.
+    private func previousParagraph(in text: NSString, from cursor: Int) -> Int {
+        var i = cursor
+        if i == 0 { return 0 }
+        // Step to start of previous line.
+        i = lineStart(in: text, of: i)
+        if i > 0 { i -= 1 }
+        i = lineStart(in: text, of: i)
+        // Skip blank lines.
+        while i > 0, isLineBlank(in: text, at: i) {
+            if i == 0 { break }
+            i = lineStart(in: text, of: max(0, i - 1))
+        }
+        // Walk backward through non-blank until blank or BOF.
+        while i > 0, !isLineBlank(in: text, at: i) {
+            if i == 0 { break }
+            let prevLineStart = lineStart(in: text, of: max(0, i - 1))
+            if isLineBlank(in: text, at: prevLineStart) { i = prevLineStart; break }
+            i = prevLineStart
+        }
+        return max(0, i)
+    }
+
+    private func isLineBlank(in text: NSString, at location: Int) -> Bool {
+        let start = lineStart(in: text, of: location)
+        let end = lineEnd(in: text, of: start)
+        var i = start
+        while i < end {
+            let c = text.character(at: i)
+            if c != 0x20 && c != 0x09 { return false }
+            i += 1
+        }
+        return true
+    }
+
+    // MARK: - Matching bracket (%)
+
+    private func matchingBracketLocation(in text: NSString, from cursor: Int) -> Int? {
+        let pairs: [unichar: (match: unichar, forward: Bool)] = [
+            0x28: (0x29, true),   // ( -> )
+            0x29: (0x28, false),  // ) -> (
+            0x5B: (0x5D, true),   // [ -> ]
+            0x5D: (0x5B, false),  // ] -> [
+            0x7B: (0x7D, true),   // { -> }
+            0x7D: (0x7B, false)   // } -> {
+        ]
+        let len = text.length
+        guard cursor < len else { return nil }
+        // Vim's `%` scans the current line for the FIRST bracket if the
+        // cursor isn't on one. Match what's at the cursor first.
+        var startLoc = cursor
+        var c = text.character(at: cursor)
+        if pairs[c] == nil {
+            // Scan forward on the current line.
+            let endOfLine = lineEnd(in: text, of: cursor)
+            var i = cursor
+            while i < endOfLine {
+                if pairs[text.character(at: i)] != nil { startLoc = i; break }
+                i += 1
+            }
+            c = text.character(at: startLoc)
+            guard pairs[c] != nil else { return nil }
+        }
+        let (target, forward) = pairs[c]!
+        var depth = 1
+        if forward {
+            var i = startLoc + 1
+            while i < len {
+                let ch = text.character(at: i)
+                if ch == c { depth += 1 }
+                else if ch == target {
+                    depth -= 1
+                    if depth == 0 { return i }
+                }
+                i += 1
+            }
+        } else {
+            var i = startLoc - 1
+            while i >= 0 {
+                let ch = text.character(at: i)
+                if ch == c { depth += 1 }
+                else if ch == target {
+                    depth -= 1
+                    if depth == 0 { return i }
+                }
+                i -= 1
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Toggle case (~)
+
+    private func toggleCaseAtCaret(count: Int, editor: VimTextEditor) {
+        let ns = editor.text as NSString
+        let length = ns.length
+        let cursor = editor.selectedRange.location
+        let end = min(length, cursor + count)
+        guard end > cursor else { return }
+        var swapped = ""
+        for i in cursor..<end {
+            if let scalar = Unicode.Scalar(ns.character(at: i)) {
+                let ch = Character(scalar)
+                if ch.isUppercase { swapped.append(String(ch).lowercased()) }
+                else if ch.isLowercase { swapped.append(String(ch).uppercased()) }
+                else { swapped.append(ch) }
+            }
+        }
+        editor.replace(in: NSRange(location: cursor, length: end - cursor), with: swapped)
+        editor.selectedRange = NSRange(location: min(end, max(0, (editor.text as NSString).length - 1)), length: 0)
     }
 }
 
