@@ -4,6 +4,11 @@ import UserNotifications
 extension Notification.Name {
     public static let closePanel = Notification.Name("closePanel")
     public static let openPanel = Notification.Name("openPanel")
+    /// Posted when /vim is activated or exited. `userInfo["active"]` is
+    /// the new state. The app-level Escape monitor reads this so vim
+    /// owns Esc while it's on, then yields it back to "dismiss panel"
+    /// when vim exits.
+    public static let vimStateChanged = Notification.Name("vimStateChanged")
 }
 
 public struct ContentView: View {
@@ -18,6 +23,14 @@ public struct ContentView: View {
     @State private var isSubmitting = false
     @State private var tagPrefix = ""
     @State private var tagSelectedIndex = 0
+    @State private var slashPrefix = ""
+    @State private var slashSelectedIndex = 0
+    @State private var pendingCursor: Int?
+    @State private var slashCommands: [SlashCommand] = []
+    @State private var currentMode: TextMode?
+    @State private var vimEngine: VimEngine?
+    @State private var vimBadgeText: String = "VIM:N"
+    @State private var showVimCheatsheet: Bool = false
     @State private var journals: [String] = []
     @State private var editingEntry: JournalEntry?
     @State private var editingJournal: String?
@@ -29,15 +42,23 @@ public struct ContentView: View {
     @AppStorage("externalEditorBundleID") private var externalEditorBundleID = ""
 
     private let service = JrnlService()
+    private let slashRegistry = SlashCommandRegistry.shared
 
     private var editorView: some View {
         EntryEditorView(
             text: $entryText,
             tagPrefix: $tagPrefix,
+            slashPrefix: $slashPrefix,
+            pendingCursor: $pendingCursor,
+            currentMode: currentMode,
+            vimEngine: vimEngine,
             onSubmit: { submit() },
             onOpenExternal: { openInExternalEditor() },
             onTagKeyEvent: { event in
                 handleTagKey(event)
+            },
+            onSlashKeyEvent: { event in
+                handleSlashKey(event)
             }
         )
         .frame(height: 150)
@@ -52,11 +73,53 @@ public struct ContentView: View {
         }
     }
 
+    private var modeBadge: some View {
+        Group {
+            if let mode = currentMode {
+                Button(action: { exitCurrentMode() }) {
+                    HStack(spacing: 3) {
+                        Text(mode == .vim ? vimBadgeText : mode.badge)
+                            .font(.caption2.bold())
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.3))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(modeHelp(mode))
+            }
+        }
+    }
+
+    private func modeHelp(_ mode: TextMode) -> String {
+        switch mode {
+        case .uppercase: return "Typing in uppercase. Click or type /uc again to clear."
+        case .vim:       return "Vim mode. Click to exit, or :q / :vim / :wq in normal mode."
+        }
+    }
+
+    private func exitCurrentMode() {
+        currentMode = nil
+        vimEngine = nil
+    }
+
     private var tagSuggestion: TagSuggestionView {
         TagSuggestionView(
             tags: tags,
             filter: tagPrefix,
             selectedIndex: $tagSelectedIndex
+        )
+    }
+
+    private var slashSuggestion: SlashSuggestionView {
+        SlashSuggestionView(
+            commands: slashCommands,
+            filter: slashPrefix,
+            selectedIndex: $slashSelectedIndex
         )
     }
 
@@ -74,6 +137,8 @@ public struct ContentView: View {
 
             if !tagPrefix.isEmpty {
                 tagSuggestion
+            } else if !slashPrefix.isEmpty {
+                slashSuggestion
             }
 
             // Submit bar
@@ -122,6 +187,21 @@ public struct ContentView: View {
                 }
 
                 Spacer()
+
+                if currentMode == .vim {
+                    Button(action: { showVimCheatsheet.toggle() }) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Vim command reference")
+                    .popover(isPresented: $showVimCheatsheet, arrowEdge: .top) {
+                        VimCheatsheetView()
+                    }
+                }
+
+                modeBadge
 
                 if isEditing {
                     Text("Editing (\(editingJournal ?? selectedJournal))")
@@ -189,10 +269,12 @@ public struct ContentView: View {
         }
         .frame(width: 400, height: 500)
         .task {
+            slashCommands = slashRegistry.reload()
             await loadJournals()
             await loadData()
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("panelDidOpen"))) { _ in
+            slashCommands = slashRegistry.reload()
             Task {
                 await loadJournals()
                 await loadData()
@@ -200,6 +282,16 @@ public struct ContentView: View {
         }
         .onChange(of: tagPrefix) { _, _ in
             tagSelectedIndex = 0
+        }
+        .onChange(of: slashPrefix) { _, _ in
+            slashSelectedIndex = 0
+        }
+        .onChange(of: currentMode) { _, newMode in
+            NotificationCenter.default.post(
+                name: .vimStateChanged,
+                object: nil,
+                userInfo: ["active": newMode == .vim]
+            )
         }
         .onChange(of: selectedJournal) { _, newJournal in
             let journal = newJournal
@@ -220,7 +312,7 @@ public struct ContentView: View {
         }
     }
 
-    private func handleTagKey(_ event: EntryEditorView.TagKeyEvent) -> Bool {
+    private func handleTagKey(_ event: EntryEditorView.SuggestionKeyEvent) -> Bool {
         let items = tagSuggestion.filteredTags
         guard !items.isEmpty else { return false }
 
@@ -238,6 +330,8 @@ public struct ContentView: View {
         case .escape:
             tagPrefix = ""
             return true
+        case .space:
+            return false
         }
     }
 
@@ -246,6 +340,88 @@ public struct ContentView: View {
               let range = entryText.range(of: tagPrefix, options: .backwards) else { return }
         entryText.replaceSubrange(range, with: tag.name + " ")
         tagPrefix = ""
+    }
+
+    private func handleSlashKey(_ event: EntryEditorView.SuggestionKeyEvent) -> Bool {
+        let items = slashSuggestion.filteredCommands
+
+        switch event {
+        case .arrowDown:
+            guard !items.isEmpty else { return false }
+            slashSelectedIndex = min(slashSelectedIndex + 1, items.count - 1)
+            return true
+        case .arrowUp:
+            guard !items.isEmpty else { return false }
+            slashSelectedIndex = max(slashSelectedIndex - 1, 0)
+            return true
+        case .enter, .tab:
+            guard !items.isEmpty else { return false }
+            commitSlashCommand(items[slashSelectedIndex])
+            return true
+        case .escape:
+            slashPrefix = ""
+            return true
+        case .space:
+            // Space commits only on an exact case-insensitive match against
+            // the typed prefix; otherwise the space falls through and ends
+            // the slash context naturally.
+            if let cmd = slashRegistry.exactMatch(prefix: slashPrefix) {
+                commitSlashCommand(cmd)
+                return true
+            }
+            return false
+        }
+    }
+
+    private func commitSlashCommand(_ command: SlashCommand) {
+        guard !slashPrefix.isEmpty,
+              let range = entryText.range(of: slashPrefix, options: .backwards) else { return }
+        let prefixStartUTF16 = entryText.utf16.distance(
+            from: entryText.utf16.startIndex,
+            to: range.lowerBound.samePosition(in: entryText.utf16) ?? entryText.utf16.startIndex
+        )
+
+        switch command {
+        case .template(let template):
+            let (expanded, cursorOffset) = template.expand()
+            entryText.replaceSubrange(range, with: expanded)
+            pendingCursor = prefixStartUTF16 + cursorOffset
+        case .mode(let modeCommand):
+            entryText.replaceSubrange(range, with: "")
+            pendingCursor = prefixStartUTF16
+            if currentMode == modeCommand.mode {
+                exitCurrentMode()
+            } else {
+                activateMode(modeCommand.mode)
+            }
+        }
+        slashPrefix = ""
+    }
+
+    private func activateMode(_ mode: TextMode) {
+        currentMode = mode
+        if mode == .vim {
+            let engine = VimEngine()
+            engine.onExit = {
+                Task { @MainActor in self.exitCurrentMode() }
+            }
+            engine.onSubmit = {
+                Task { @MainActor in self.submit() }
+            }
+            // Submode + command-line buffer drive the badge text. Push
+            // updates into @State so SwiftUI re-renders the capsule.
+            let refresh: () -> Void = {
+                Task { @MainActor in
+                    self.vimBadgeText = engine.badge
+                }
+            }
+            engine.onSubmodeChanged = refresh
+            engine.onCommandBufferChanged = refresh
+            vimBadgeText = engine.badge
+            vimEngine = engine
+        } else {
+            vimEngine = nil
+        }
     }
 
     private func startEdit(_ entry: JournalEntry) {
@@ -268,10 +444,13 @@ public struct ContentView: View {
         editingEntry = nil
         editingJournal = nil
         entryText = ""
+        currentMode = nil
+        vimEngine = nil
     }
 
     private func submit() {
-        let text = entryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = slashRegistry.unescape(entryText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isSubmitting else { return }
         isSubmitting = true
         statusMessage = ""
@@ -317,6 +496,8 @@ public struct ContentView: View {
                     sendNotification("Entry saved to \(selectedJournal)")
                 }
                 entryText = ""
+                currentMode = nil
+                vimEngine = nil
                 await loadData(for: submitJournal)
                 try? await Task.sleep(for: .seconds(2))
                 statusMessage = ""
@@ -339,25 +520,25 @@ public struct ContentView: View {
     private func openInExternalEditor() {
         let tempDir = FileManager.default.temporaryDirectory
         let tempFileURL = tempDir.appendingPathComponent("jrnl_entry_\(UUID().uuidString).md")
-        
+
         do {
             try entryText.write(to: tempFileURL, atomically: true, encoding: .utf8)
         } catch {
             statusMessage = "Failed to create temp file"
             return
         }
-        
+
         NotificationCenter.default.post(name: .closePanel, object: nil)
-        
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        
+
         if externalEditorBundleID.isEmpty {
             process.arguments = ["-W", "-n", "-t", tempFileURL.path]
         } else {
             process.arguments = ["-W", "-n", "-b", externalEditorBundleID, tempFileURL.path]
         }
-        
+
         process.terminationHandler = { _ in
             Task { @MainActor in
                 if let updatedText = try? String(contentsOf: tempFileURL, encoding: .utf8) {
@@ -367,7 +548,7 @@ public struct ContentView: View {
                 NotificationCenter.default.post(name: .openPanel, object: nil)
             }
         }
-        
+
         do {
             try process.run()
         } catch {

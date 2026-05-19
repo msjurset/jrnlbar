@@ -222,6 +222,665 @@ test("JournalEntry.id is deterministic") {
     expect(e.id == "2026-03-06-09:00-My title.")
 }
 
+// ─── Template tokens ───
+
+test("Template.expand: no tokens returns body verbatim") {
+    let t = Template(name: "x", body: "Plain body.", path: URL(fileURLWithPath: "/tmp/x.md"))
+    let (text, offset) = t.expand()
+    expect(text == "Plain body.", "got: \(text)")
+    expect(offset == ("Plain body." as NSString).length, "offset should be end-of-text, got \(offset)")
+}
+
+test("Template.expand: {{date}} substitution") {
+    let t = Template(name: "x", body: "Today: {{date}}.", path: URL(fileURLWithPath: "/tmp/x.md"))
+    let fixed = ISO8601DateFormatter().date(from: "2026-05-18T14:32:00Z")!
+    let (text, _) = t.expand(now: fixed, locale: Locale(identifier: "en_US_POSIX"))
+    expect(text.contains("Today: 2026-05-18."), "got: \(text)")
+}
+
+test("Template.expand: {{cursor}} is removed and offset returned") {
+    let t = Template(name: "x", body: "Hi {{cursor}}there.", path: URL(fileURLWithPath: "/tmp/x.md"))
+    let (text, offset) = t.expand()
+    expect(text == "Hi there.", "got: \(text)")
+    expect(offset == 3, "cursor offset should be 3, got \(offset)")
+}
+
+test("Template.expand: tokens combined") {
+    let t = Template(name: "x", body: "## {{date}}\n{{cursor}}", path: URL(fileURLWithPath: "/tmp/x.md"))
+    let fixed = ISO8601DateFormatter().date(from: "2026-05-18T14:32:00Z")!
+    let (text, offset) = t.expand(now: fixed, locale: Locale(identifier: "en_US_POSIX"))
+    expect(text == "## 2026-05-18\n", "got: \(text)")
+    expect(offset == ("## 2026-05-18\n" as NSString).length, "offset should land at end, got \(offset)")
+}
+
+test("Template.expand: unknown tokens stay literal") {
+    let t = Template(name: "x", body: "Hello {{name}}.", path: URL(fileURLWithPath: "/tmp/x.md"))
+    let (text, _) = t.expand()
+    expect(text == "Hello {{name}}.", "got: \(text)")
+}
+
+// ─── TemplateStore: seeding + load ───
+
+func makeTempDir() -> URL {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("jrnlbar-test-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}
+
+test("TemplateStore.reload: seeds defaults when folder is empty") {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = TemplateStore(directoryOverride: dir)
+    let templates = store.reload()
+    let names = Set(templates.map { $0.name })
+    expect(names.contains("morning-standup"))
+    expect(names.contains("gratitude"))
+    expect(names.contains("weekly-review"))
+    expect(names.contains("meeting-notes"))
+}
+
+test("TemplateStore.reload: does NOT seed when folder has existing files") {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let existing = dir.appendingPathComponent("user-template.md")
+    try "User-authored content.".write(to: existing, atomically: true, encoding: .utf8)
+
+    let store = TemplateStore(directoryOverride: dir)
+    let templates = store.reload()
+    let names = Set(templates.map { $0.name })
+    expect(names == ["user-template"], "expected only user-template, got \(names)")
+}
+
+test("TemplateStore.reload: skips files with invalid (non-word) names") {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try "spaces in name".write(
+        to: dir.appendingPathComponent("Has Spaces.md"),
+        atomically: true, encoding: .utf8
+    )
+    try "good".write(
+        to: dir.appendingPathComponent("good-name.md"),
+        atomically: true, encoding: .utf8
+    )
+    let store = TemplateStore(directoryOverride: dir)
+    let templates = store.reload()
+    expect(templates.map(\.name) == ["good-name"], "got: \(templates.map(\.name))")
+}
+
+test("TemplateStore.match: prefix match is case-insensitive and strips leading slash") {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = TemplateStore(directoryOverride: dir)
+    store.reload()  // seeds the four defaults
+    expect(store.match(prefix: "/MOR").map(\.name) == ["morning-standup"])
+    expect(store.match(prefix: "weekly").map(\.name) == ["weekly-review"])
+    expect(store.match(prefix: "/").count == 4, "empty prefix returns all, got \(store.match(prefix: "/").count)")
+}
+
+test("TemplateStore.match: matches mixed-case on-disk names case-insensitively") {
+    let dir = makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try "body".write(to: dir.appendingPathComponent("Standup.md"), atomically: true, encoding: .utf8)
+    let store = TemplateStore(directoryOverride: dir)
+    store.reload()
+    expect(store.match(prefix: "/stand").map(\.name) == ["Standup"], "lowercase prefix should find Standup")
+    expect(store.match(prefix: "/STAND").map(\.name) == ["Standup"], "uppercase prefix should find Standup")
+}
+
+test("Template.isValidName: rejects whitespace and punctuation") {
+    expect(!Template.isValidName(""))
+    expect(!Template.isValidName("has space"))
+    expect(!Template.isValidName("has.dot"))
+    expect(!Template.isValidName("slashy/name"))
+    expect(Template.isValidName("good"))
+    expect(Template.isValidName("good-name"))
+    expect(Template.isValidName("good_name"))
+    expect(Template.isValidName("CamelCase123"))
+}
+
+// ─── SlashCommandRegistry: //escape unescape ───
+
+func makeRegistry(seeded: Bool = true) -> (SlashCommandRegistry, URL) {
+    let dir = makeTempDir()
+    let store = TemplateStore(directoryOverride: dir)
+    if seeded { store.reload() } // seeds the four defaults
+    let registry = SlashCommandRegistry(templateStore: store)
+    return (registry, dir)
+}
+
+test("SlashCommandRegistry.unescape: collapses //cmd at word boundary") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    expect(registry.unescape("I love //gratitude entries.") == "I love /gratitude entries.")
+    expect(registry.unescape("//gratitude at start.") == "/gratitude at start.")
+    expect(registry.unescape("Line one.\n//gratitude is great.") == "Line one.\n/gratitude is great.")
+}
+
+test("SlashCommandRegistry.unescape: does NOT touch // inside URLs") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = "See https://gratitude.example.com for more."
+    expect(registry.unescape(url) == url, "URL got mangled: \(registry.unescape(url))")
+}
+
+test("SlashCommandRegistry.unescape: leaves // alone when next word is not a registered command") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let text = "Random //notacommand here."
+    expect(registry.unescape(text) == text, "got: \(registry.unescape(text))")
+}
+
+test("SlashCommandRegistry.unescape: only collapses exact command-name word boundary") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let text = "//gratitudes plural here."
+    expect(registry.unescape(text) == text, "got: \(registry.unescape(text))")
+}
+
+test("SlashCommandRegistry.unescape: matches case-insensitively, preserves user casing") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    expect(registry.unescape("Love //Gratitude here.") == "Love /Gratitude here.")
+    expect(registry.unescape("Love //GRATITUDE here.") == "Love /GRATITUDE here.")
+    expect(registry.unescape("Love //gratitude here.") == "Love /gratitude here.")
+}
+
+test("SlashCommandRegistry.unescape: also collapses //uc (mode command)") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    expect(registry.unescape("I typed //uc in a sentence.") == "I typed /uc in a sentence.")
+    expect(registry.unescape("And //UC too.") == "And /UC too.")
+}
+
+// ─── SlashCommandRegistry: match + exactMatch ───
+
+test("SlashCommandRegistry.match: includes both templates and mode commands") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let names = registry.all.map(\.name)
+    expect(names.contains("uc"))
+    expect(names.contains("gratitude"))
+}
+
+test("SlashCommandRegistry.match: prefix /u matches /uc") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    expect(registry.match(prefix: "/u").map(\.name) == ["uc"])
+}
+
+test("SlashCommandRegistry.exactMatch: case-insensitive, returns nil if no match") {
+    let (registry, dir) = makeRegistry()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    if case .mode(let m) = registry.exactMatch(prefix: "/UC") {
+        expect(m.mode == .uppercase)
+    } else {
+        expect(false, "expected /UC to resolve to uppercase mode command")
+    }
+    expect(registry.exactMatch(prefix: "/nope") == nil)
+}
+
+// ─── TextMode.apply ───
+
+test("TextMode.apply: uppercase transform") {
+    expect(TextMode.uppercase.apply("hello") == "HELLO")
+    expect(TextMode.uppercase.apply("MiXeD 1.0") == "MIXED 1.0")
+}
+
+test("TextMode.apply: vim is identity (engine handles input separately)") {
+    expect(TextMode.vim.apply("hello") == "hello")
+}
+
+// ─── VimEngine ───
+
+final class StubEditor: VimTextEditor {
+    var text: String
+    var selectedRange: NSRange
+    private var history: [(String, NSRange)] = []
+    private var future: [(String, NSRange)] = []
+
+    init(_ text: String, caret: Int = 0) {
+        self.text = text
+        self.selectedRange = NSRange(location: caret, length: 0)
+    }
+
+    func replace(in range: NSRange, with string: String) {
+        history.append((text, selectedRange))
+        future.removeAll()
+        let ns = NSMutableString(string: text)
+        ns.replaceCharacters(in: range, with: string)
+        text = ns as String
+    }
+
+    func vimUndo() {
+        guard let (prev, sel) = history.popLast() else { return }
+        future.append((text, selectedRange))
+        text = prev
+        selectedRange = sel
+    }
+
+    func vimRedo() {
+        guard let (next, sel) = future.popLast() else { return }
+        history.append((text, selectedRange))
+        text = next
+        selectedRange = sel
+    }
+}
+
+/// Feed each key in `keys` to the engine. A key is either:
+///   * a 1-char string (e.g. "h", "i") — its first character.
+///   * a sentinel like "<esc>", "<enter>", "<bs>" for special keys.
+func feed(_ engine: VimEngine, _ keys: [String], on editor: VimTextEditor) {
+    for k in keys {
+        let (chars, keyCode): (String?, UInt16)
+        switch k {
+        case "<esc>": chars = nil; keyCode = 53
+        case "<enter>": chars = nil; keyCode = 36
+        case "<bs>": chars = nil; keyCode = 51
+        case "<left>": chars = "\u{F702}"; keyCode = 123
+        case "<right>": chars = "\u{F703}"; keyCode = 124
+        case "<down>": chars = "\u{F701}"; keyCode = 125
+        case "<up>": chars = "\u{F700}"; keyCode = 126
+        case "<c-r>": chars = "r"; keyCode = 15
+            engine.handleKey(chars: chars, keyCode: keyCode, modifiers: [.control], editor: editor)
+            continue
+        default: chars = k; keyCode = 0
+        }
+        engine.handleKey(chars: chars, keyCode: keyCode, modifiers: [], editor: editor)
+    }
+}
+
+test("VimEngine: starts in normal mode") {
+    let engine = VimEngine()
+    expect(engine.submode == .normal)
+    expect(engine.badge == "VIM:N")
+}
+
+test("VimEngine: i enters insert, Esc returns to normal") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 0)
+    feed(engine, ["i"], on: ed)
+    expect(engine.submode == .insert, "expected insert mode")
+    feed(engine, ["<esc>"], on: ed)
+    expect(engine.submode == .normal, "expected normal after Esc")
+}
+
+test("VimEngine: h/j/k/l move caret") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, ["l", "l"], on: ed)
+    expect(ed.selectedRange.location == 2, "l, l -> 2, got \(ed.selectedRange.location)")
+    feed(engine, ["j"], on: ed)
+    expect(ed.selectedRange.location == 8, "down to 'r' in 'world', got \(ed.selectedRange.location)")
+    feed(engine, ["h"], on: ed)
+    expect(ed.selectedRange.location == 7, "back one, got \(ed.selectedRange.location)")
+    feed(engine, ["k"], on: ed)
+    expect(ed.selectedRange.location == 1, "up to col 1 of line 1, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: 0 and $ jump to line start / end") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 6)
+    feed(engine, ["0"], on: ed)
+    expect(ed.selectedRange.location == 0)
+    feed(engine, ["$"], on: ed)
+    expect(ed.selectedRange.location == 11, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: gg and G jump to buffer start / end") {
+    let engine = VimEngine()
+    let ed = StubEditor("line one\nline two\nline three", caret: 10)
+    feed(engine, ["g", "g"], on: ed)
+    expect(ed.selectedRange.location == 0)
+    feed(engine, ["G"], on: ed)
+    expect(ed.selectedRange.location == 28, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: w and b move by word") {
+    let engine = VimEngine()
+    let ed = StubEditor("the quick brown fox", caret: 0)
+    feed(engine, ["w"], on: ed)
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+    feed(engine, ["w", "w"], on: ed)
+    expect(ed.selectedRange.location == 16, "got \(ed.selectedRange.location)")
+    feed(engine, ["b"], on: ed)
+    expect(ed.selectedRange.location == 10, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: x deletes character") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 1)
+    feed(engine, ["x"], on: ed)
+    expect(ed.text == "hllo", "got: \(ed.text)")
+    expect(ed.selectedRange.location == 1)
+}
+
+test("VimEngine: dd deletes whole line including newline") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree", caret: 5)
+    feed(engine, ["d", "d"], on: ed)
+    expect(ed.text == "one\nthree", "got: \(ed.text)")
+}
+
+test("VimEngine: dw deletes to next word start") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz", caret: 0)
+    feed(engine, ["d", "w"], on: ed)
+    expect(ed.text == "bar baz", "got: \(ed.text)")
+}
+
+test("VimEngine: count prefix repeats motion") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdefghij", caret: 0)
+    feed(engine, ["3", "l"], on: ed)
+    expect(ed.selectedRange.location == 3, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: 3dd deletes three lines") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne", caret: 0)
+    feed(engine, ["3", "d", "d"], on: ed)
+    expect(ed.text == "d\ne", "got: \(ed.text)")
+}
+
+test("VimEngine: o opens line below and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("first\nsecond", caret: 2)
+    feed(engine, ["o"], on: ed)
+    expect(ed.text == "first\n\nsecond", "got: \(ed.text)")
+    expect(ed.selectedRange.location == 6)
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: A jumps to line end and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, ["A"], on: ed)
+    expect(ed.selectedRange.location == 5)
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: a moves right and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("hi", caret: 0)
+    feed(engine, ["a"], on: ed)
+    expect(ed.selectedRange.location == 1)
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: u undoes a delete") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 0)
+    feed(engine, ["x"], on: ed)
+    expect(ed.text == "ello")
+    feed(engine, ["u"], on: ed)
+    expect(ed.text == "hello", "undo restored, got: \(ed.text)")
+}
+
+test("VimEngine: :q exits via onExit callback") {
+    let engine = VimEngine()
+    let ed = StubEditor("anything", caret: 0)
+    var exited = false
+    engine.onExit = { exited = true }
+    feed(engine, [":", "q", "<enter>"], on: ed)
+    expect(exited, "expected :q to fire onExit")
+}
+
+test("VimEngine: :vim also exits") {
+    let engine = VimEngine()
+    let ed = StubEditor("anything", caret: 0)
+    var exited = false
+    engine.onExit = { exited = true }
+    feed(engine, [":", "v", "i", "m", "<enter>"], on: ed)
+    expect(exited)
+}
+
+test("VimEngine: :w submits without exiting") {
+    let engine = VimEngine()
+    let ed = StubEditor("body", caret: 0)
+    var submitted = false
+    var exited = false
+    engine.onSubmit = { submitted = true }
+    engine.onExit = { exited = true }
+    feed(engine, [":", "w", "<enter>"], on: ed)
+    expect(submitted)
+    expect(!exited, ":w must not exit")
+}
+
+test("VimEngine: :wq submits and exits") {
+    let engine = VimEngine()
+    let ed = StubEditor("body", caret: 0)
+    var submitted = false
+    var exited = false
+    engine.onSubmit = { submitted = true }
+    engine.onExit = { exited = true }
+    feed(engine, [":", "w", "q", "<enter>"], on: ed)
+    expect(submitted)
+    expect(exited)
+}
+
+test("VimEngine: command-mode Backspace deletes from buffer") {
+    let engine = VimEngine()
+    let ed = StubEditor("body", caret: 0)
+    feed(engine, [":", "q", "<bs>"], on: ed)
+    expect(engine.commandBuffer == "", "expected empty buffer after backspace, got '\(engine.commandBuffer)'")
+    expect(engine.submode == .command, "still in command mode while buffer was non-empty before bs")
+}
+
+test("VimEngine: arrow keys are routed to motions in normal mode") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["<right>", "<right>"], on: ed)
+    expect(ed.selectedRange.location == 2)
+    feed(engine, ["<left>"], on: ed)
+    expect(ed.selectedRange.location == 1)
+}
+
+test("VimEngine: ^ moves to first non-blank of line") {
+    let engine = VimEngine()
+    let ed = StubEditor("    hello world", caret: 10)
+    feed(engine, ["^"], on: ed)
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: ^ on all-whitespace line lands at line start") {
+    let engine = VimEngine()
+    let ed = StubEditor("   \nhello", caret: 2)
+    feed(engine, ["^"], on: ed)
+    expect(ed.selectedRange.location == 0, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: I jumps to first non-blank and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("    hello", caret: 8)
+    feed(engine, ["I"], on: ed)
+    expect(ed.selectedRange.location == 4)
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: yy then p pastes line below") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo", caret: 0)
+    feed(engine, ["y", "y", "p"], on: ed)
+    expect(ed.text == "one\none\ntwo", "got: \(ed.text)")
+}
+
+test("VimEngine: yy then P pastes line above") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo", caret: 4)  // on the 't' of two
+    feed(engine, ["y", "y", "P"], on: ed)
+    expect(ed.text == "one\ntwo\ntwo", "got: \(ed.text)")
+}
+
+test("VimEngine: yw then p pastes word inline after cursor") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar", caret: 0)
+    feed(engine, ["y", "w", "p"], on: ed)
+    // yw yanks "foo " (including trailing space — vim semantics).
+    // Paste after cursor (pos 0 → insert at 1) → "ffoo oo bar"
+    expect(ed.text == "ffoo oo bar", "got: \(ed.text)")
+}
+
+test("VimEngine: dd then p restores the deleted line") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree", caret: 4)
+    feed(engine, ["d", "d", "p"], on: ed)
+    // dd deletes "two\n", caret lands on "three" line. p pastes below.
+    // Since "three" has no trailing newline (EOF), engine prepends \n
+    // and drops the register's trailing \n, leaving no \n at EOF.
+    expect(ed.text == "one\nthree\ntwo", "got: \(ed.text)")
+}
+
+test("VimEngine: 2yy then p pastes two lines") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc", caret: 0)
+    feed(engine, ["2", "y", "y", "p"], on: ed)
+    expect(ed.text == "a\na\nb\nb\nc", "got: \(ed.text)")
+}
+
+test("VimEngine: count multiplies paste") {
+    let engine = VimEngine()
+    let ed = StubEditor("ab", caret: 0)
+    feed(engine, ["y", "l", "3", "p"], on: ed)
+    // yl yanks "a" (single char), 3p pastes "aaa" after cursor → "aaaab"
+    expect(ed.text == "aaaab", "got: \(ed.text)")
+}
+
+test("VimEngine: r replaces single char") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 1)
+    feed(engine, ["r", "x"], on: ed)
+    expect(ed.text == "hxllo", "got: \(ed.text)")
+    expect(ed.selectedRange.location == 1, "caret stays on replaced char")
+    expect(engine.submode == .normal, "stays in normal mode after r")
+}
+
+test("VimEngine: 3r replaces three chars") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 1)
+    feed(engine, ["3", "r", "Z"], on: ed)
+    expect(ed.text == "aZZZef", "got: \(ed.text)")
+    expect(ed.selectedRange.location == 3, "caret on last replaced char, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: r at end of buffer is a no-op") {
+    let engine = VimEngine()
+    let ed = StubEditor("abc", caret: 3)
+    feed(engine, ["r", "x"], on: ed)
+    expect(ed.text == "abc", "unchanged: \(ed.text)")
+}
+
+test("VimEngine: r then Esc cancels without replacing") {
+    let engine = VimEngine()
+    let ed = StubEditor("abc", caret: 0)
+    feed(engine, ["r", "<esc>"], on: ed)
+    expect(ed.text == "abc", "unchanged: \(ed.text)")
+}
+
+test("VimEngine: cw deletes word and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar", caret: 0)
+    feed(engine, ["c", "w"], on: ed)
+    expect(ed.text == "bar", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: cc empties current line and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 2)
+    feed(engine, ["c", "c"], on: ed)
+    expect(ed.text == "\nworld", "got: \(ed.text)")
+    expect(ed.selectedRange.location == 0)
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: c$ changes to end of line") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 6)
+    feed(engine, ["c", "$"], on: ed)
+    expect(ed.text == "hello ", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: C is shorthand for c$") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 6)
+    feed(engine, ["C"], on: ed)
+    expect(ed.text == "hello ", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: D is shorthand for d$") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 6)
+    feed(engine, ["D"], on: ed)
+    expect(ed.text == "hello ", "got: \(ed.text)")
+    expect(engine.submode == .normal, "D stays in normal mode")
+}
+
+test("VimEngine: s replaces one char and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 0)
+    feed(engine, ["s"], on: ed)
+    expect(ed.text == "ello", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: r followed by space replaces with space and stays normal") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 2)
+    feed(engine, ["r", " "], on: ed)
+    expect(ed.text == "ab def", "got: \(ed.text)")
+    expect(engine.submode == .normal, "r must NOT switch modes")
+    expect(ed.selectedRange.location == 2, "caret stays on replaced char")
+}
+
+test("VimEngine: e moves to end of current word") {
+    let engine = VimEngine()
+    let ed = StubEditor("abc def", caret: 0)
+    feed(engine, ["e"], on: ed)
+    expect(ed.selectedRange.location == 2, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: e from end of word jumps to end of next word") {
+    let engine = VimEngine()
+    let ed = StubEditor("abc def ghi", caret: 2)
+    feed(engine, ["e"], on: ed)
+    expect(ed.selectedRange.location == 6, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: ea is the standard append-after-word idiom") {
+    let engine = VimEngine()
+    let ed = StubEditor("abc def", caret: 0)
+    // ea: e moves to 'c' (end of "abc"), a then moves to position after 'c' and enters insert
+    feed(engine, ["e", "a"], on: ed)
+    expect(ed.selectedRange.location == 3, "should land just after 'c', got \(ed.selectedRange.location)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: ge moves to end of previous word") {
+    let engine = VimEngine()
+    let ed = StubEditor("abc def ghi", caret: 9)
+    feed(engine, ["g", "e"], on: ed)
+    expect(ed.selectedRange.location == 6, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: de deletes through end of word") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar", caret: 0)
+    feed(engine, ["d", "e"], on: ed)
+    // de from start of "foo" deletes "foo" (cursor 0..3 exclusive of trailing space)
+    expect(ed.text == " bar", "got: \(ed.text)")
+}
+
+test("VimEngine: ce changes through end of word and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar", caret: 0)
+    feed(engine, ["c", "e"], on: ed)
+    expect(ed.text == " bar", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
 // ─── Summary ───
 
 print("\n\(passed + failed) tests, \(passed) passed, \(failed) failed")

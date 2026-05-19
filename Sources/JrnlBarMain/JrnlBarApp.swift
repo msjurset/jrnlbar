@@ -105,6 +105,7 @@ final class AppController {
     private var globalClickMonitor: Any?
     private var escapeMonitor: Any?
     private let servicesProvider = ServicesProvider()
+    private var isVimActive = false
 
     func setup() {
         setupStatusItem()
@@ -114,6 +115,11 @@ final class AppController {
         
         NotificationCenter.default.addObserver(self, selector: #selector(handleClosePanelRequest), name: .closePanel, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleOpenPanelRequest), name: .openPanel, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleVimStateChanged(_:)), name: .vimStateChanged, object: nil)
+    }
+
+    @objc private func handleVimStateChanged(_ note: Notification) {
+        isVimActive = (note.userInfo?["active"] as? Bool) ?? false
     }
 
     @objc private func handleClosePanelRequest() {
@@ -237,6 +243,10 @@ final class AppController {
         }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isVisible, event.keyCode == 53 else { return event }
+            // While /vim is active, Esc belongs to vim (clear pending op
+            // in normal mode, leave insert mode, abort command line).
+            // Once vim exits, Esc returns to "dismiss panel."
+            if self.isVimActive { return event }
             self.closePanel()
             return nil
         }
@@ -253,6 +263,17 @@ final class AppController {
 @main
 enum JrnlBarApp {
     static func main() {
+        // Single-instance guard: if another JrnlBar is already running, exit
+        // immediately. Defends against macOS reopening the app on login while
+        // the LaunchAgent also fires, duplicate Login Items entries, etc.
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.local.JrnlBar"
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != myPID }
+        if !others.isEmpty {
+            exit(0)
+        }
+
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
