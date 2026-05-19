@@ -7,20 +7,17 @@ let package = Package(
     platforms: [
         .macOS(.v14)
     ],
-    products: [
-        // Exported so other Swift packages / Xcode projects can depend
-        // on the portable vim component directly.
-        .library(name: "VimEngine", targets: ["VimEngine"])
+    dependencies: [
+        // VimEngine lives in its own repo so other apps can depend on
+        // the same versioned package without copying files.
+        .package(url: "https://github.com/msjurset/swift-vim-engine.git", from: "1.0.0")
     ],
     targets: [
         .target(
-            name: "VimEngine",
-            path: "Sources/VimEngine",
-            exclude: ["README.md", "INTEGRATION_PROMPT.md"]
-        ),
-        .target(
             name: "JrnlBarLib",
-            dependencies: ["VimEngine"],
+            dependencies: [
+                .product(name: "VimEngine", package: "swift-vim-engine")
+            ],
             path: "Sources/JrnlBar",
             exclude: ["JrnlBarApp.swift"]
         ),
@@ -31,7 +28,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "JrnlBarTests",
-            dependencies: ["JrnlBarLib", "VimEngine"],
+            dependencies: [
+                "JrnlBarLib",
+                .product(name: "VimEngine", package: "swift-vim-engine")
+            ],
             path: "Tests/JrnlBarTests"
         )
     ]
