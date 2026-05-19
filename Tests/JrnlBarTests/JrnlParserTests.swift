@@ -1304,6 +1304,85 @@ test("VimEngine: gUi\" uppercases inside quotes") {
     expect(ed.text == "a \"HELLO WORLD\" b", "got: \(ed.text)")
 }
 
+// ─── X / J / Y / gv / visual case
+
+test("VimEngine: X deletes character before caret") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 3)
+    feed(engine, ["X"], on: ed)
+    expect(ed.text == "helo", "got: \(ed.text)")
+    expect(ed.selectedRange.location == 2)
+}
+
+test("VimEngine: X does not cross line boundary") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo\nbar", caret: 4)  // on 'b' of bar
+    feed(engine, ["X"], on: ed)
+    // X tries to delete the \n but is bounded by line start; nothing happens.
+    expect(ed.text == "foo\nbar", "got: \(ed.text)")
+}
+
+test("VimEngine: J joins next line with a space") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, ["J"], on: ed)
+    expect(ed.text == "hello world", "got: \(ed.text)")
+}
+
+test("VimEngine: J trims leading whitespace of joined line") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\n    world", caret: 0)
+    feed(engine, ["J"], on: ed)
+    expect(ed.text == "hello world", "got: \(ed.text)")
+}
+
+test("VimEngine: J with count joins multiple lines") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd", caret: 0)
+    feed(engine, ["3", "J"], on: ed)
+    expect(ed.text == "a b c\nd", "got: \(ed.text)")
+}
+
+test("VimEngine: Y is alias for yy") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo", caret: 0)
+    feed(engine, ["Y", "p"], on: ed)
+    expect(ed.text == "one\none\ntwo", "got: \(ed.text)")
+}
+
+test("VimEngine: gv re-enters last visual selection") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 0)
+    feed(engine, ["v", "l", "l", "<esc>"], on: ed)
+    // Selection collapsed but lastVisual is recorded.
+    feed(engine, ["g", "v"], on: ed)
+    expect(engine.submode == .visual)
+    expect(ed.selectedRange.location == 0 && ed.selectedRange.length == 3, "got \(ed.selectedRange)")
+}
+
+test("VimEngine: visual ~ toggles case of selection") {
+    let engine = VimEngine()
+    let ed = StubEditor("Hello World", caret: 0)
+    feed(engine, ["v", "l", "l", "l", "l", "~"], on: ed)
+    // Selection covers "Hello" (5 chars), toggled to "hELLO".
+    expect(ed.text == "hELLO World", "got: \(ed.text)")
+    expect(engine.submode == .normal)
+}
+
+test("VimEngine: visual U uppercases selection") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 0)
+    feed(engine, ["v", "l", "l", "l", "l", "U"], on: ed)
+    expect(ed.text == "HELLO world", "got: \(ed.text)")
+}
+
+test("VimEngine: visual u lowercases selection") {
+    let engine = VimEngine()
+    let ed = StubEditor("HELLO WORLD", caret: 0)
+    feed(engine, ["v", "l", "l", "l", "l", "u"], on: ed)
+    expect(ed.text == "hello WORLD", "got: \(ed.text)")
+}
+
 // ─── Summary ───
 
 print("\n\(passed + failed) tests, \(passed) passed, \(failed) failed")

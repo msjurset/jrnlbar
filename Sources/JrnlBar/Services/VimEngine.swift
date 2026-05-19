@@ -63,6 +63,10 @@ public final class VimEngine {
     // editor.selectedRange.location always reports the lower bound.
     private var visualAnchor: Int = 0
     private var visualCursor: Int = 0
+    // Last visual selection — for `gv` re-entry into the same region.
+    private var lastVisualAnchor: Int?
+    private var lastVisualCursor: Int?
+    private var lastVisualMode: Submode?
     // `.` repeat: closure recording the last text-mutating command,
     // replayed in the current editor when `.` is pressed.
     private var lastChange: ((VimTextEditor) -> Void)?
@@ -230,6 +234,16 @@ public final class VimEngine {
             case "~":
                 pendingOperator = .togglecase
                 pendingOperatorCount = gn
+            case "v":
+                // Re-enter the last visual selection.
+                if let lastAnchor = lastVisualAnchor,
+                   let lastCursor = lastVisualCursor,
+                   let lastMode = lastVisualMode {
+                    visualAnchor = lastAnchor
+                    visualCursor = lastCursor
+                    setSubmode(lastMode)
+                    applyVisualSelection(editor)
+                }
             default: break
             }
             return true
@@ -282,6 +296,21 @@ public final class VimEngine {
             recordChange { [weak self] ed in
                 self?.deleteCharAtCaret(count: n, editor: ed)
             }
+        case "X":
+            deleteCharBeforeCaret(count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.deleteCharBeforeCaret(count: n, editor: ed)
+            }
+        case "J":
+            joinLines(count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.joinLines(count: n, editor: ed)
+            }
+        case "Y":
+            // Y is a synonym for yy in standard vim (Vim docs: "Yank N
+            // lines, like yy"). Vi sometimes treats it as y$ — we use
+            // the yy meaning, which is what most users expect today.
+            yankLines(count: n, editor: editor)
         case "d":
             pendingOperator = .delete
             pendingOperatorCount = n
@@ -713,8 +742,10 @@ public final class VimEngine {
     // MARK: - Visual mode
 
     private func handleVisual(chars: String?, keyCode: UInt16, modifiers: KeyModifiers, editor: VimTextEditor) -> Bool {
-        // Esc cancels visual without operating.
+        // Esc cancels visual without operating. We still record the last
+        // selection so `gv` can re-enter it.
         if keyCode == 53 {
+            recordLastVisual()
             collapseVisual(editor)
             setSubmode(.normal)
             return true
@@ -780,15 +811,33 @@ public final class VimEngine {
 
         // Operators — apply to the current selection.
         case "d", "x":
+            recordLastVisual()
             deleteSelection(editor)
             setSubmode(.normal)
         case "y":
+            recordLastVisual()
             yankSelection(editor)
             collapseVisual(editor)
             setSubmode(.normal)
         case "c":
+            recordLastVisual()
             deleteSelection(editor)
             setSubmode(.insert)
+        case "~":
+            applyCaseToSelection(.togglecase, editor: editor)
+            recordLastVisual()
+            collapseVisual(editor)
+            setSubmode(.normal)
+        case "U":
+            applyCaseToSelection(.uppercase, editor: editor)
+            recordLastVisual()
+            collapseVisual(editor)
+            setSubmode(.normal)
+        case "u":
+            applyCaseToSelection(.lowercase, editor: editor)
+            recordLastVisual()
+            collapseVisual(editor)
+            setSubmode(.normal)
         case "v":
             // Toggle out of charwise visual.
             if submode == .visual {
@@ -881,6 +930,19 @@ public final class VimEngine {
         guard sel.length > 0 else { return }
         register = (editor.text as NSString).substring(with: sel)
         registerIsLine = (submode == .visualLine)
+    }
+
+    private func applyCaseToSelection(_ op: PendingOperator, editor: VimTextEditor) {
+        let sel = editor.selectedRange
+        guard sel.length > 0 else { return }
+        applyOperatorToRange(op, range: sel, editor: editor)
+    }
+
+    /// Remember the current visual selection so `gv` can re-enter it.
+    private func recordLastVisual() {
+        lastVisualAnchor = visualAnchor
+        lastVisualCursor = visualCursor
+        lastVisualMode = submode
     }
 
     // MARK: - Search (/, n, N)
@@ -1204,6 +1266,50 @@ public final class VimEngine {
         guard end > cursor else { return }
         editor.replace(in: NSRange(location: cursor, length: end - cursor), with: "")
         editor.selectedRange = NSRange(location: min(cursor, max(0, (editor.text as NSString).length - 1)), length: 0)
+    }
+
+    /// `X` — delete `count` characters BEFORE the caret (stays on current line).
+    private func deleteCharBeforeCaret(count: Int, editor: VimTextEditor) {
+        let nsText = editor.text as NSString
+        let cursor = editor.selectedRange.location
+        let lineStartLoc = lineStart(in: nsText, of: cursor)
+        let start = max(lineStartLoc, cursor - count)
+        guard cursor > start else { return }
+        editor.replace(in: NSRange(location: start, length: cursor - start), with: "")
+        editor.selectedRange = NSRange(location: start, length: 0)
+    }
+
+    /// `J` — join the current line with the next, separated by a single
+    /// space (and consuming any whitespace at the joined line's start).
+    /// `NJ` joins N lines, i.e. N-1 joins (count=1 or 2 → one join).
+    private func joinLines(count: Int, editor: VimTextEditor) {
+        let joins = max(1, count - 1)
+        for _ in 0..<joins {
+            let ns = editor.text as NSString
+            let cursor = editor.selectedRange.location
+            let curLineEnd = lineEnd(in: ns, of: cursor)
+            // No newline to join means we're on the last line — stop.
+            guard curLineEnd < ns.length else { return }
+            // Range covering the newline + any leading whitespace on next line.
+            var j = curLineEnd + 1
+            while j < ns.length {
+                let c = ns.character(at: j)
+                if c == 0x20 || c == 0x09 { j += 1 } else { break }
+            }
+            // Replace with a single space — unless the joined line is empty
+            // (curLineEnd + 1 IS the next \n or end of buffer), in which
+            // case insert nothing.
+            let replacement: String
+            if j >= ns.length || ns.character(at: j) == 0x0A {
+                replacement = ""  // joining onto a blank line — just remove the \n
+            } else {
+                replacement = " "
+            }
+            editor.replace(in: NSRange(location: curLineEnd, length: j - curLineEnd), with: replacement)
+            // Vim leaves the cursor at the inserted space (or at the end of
+            // the first line when the join produced nothing).
+            editor.selectedRange = NSRange(location: curLineEnd, length: 0)
+        }
     }
 
     private func replaceCharAtCaret(with newChar: String, count: Int, editor: VimTextEditor) {

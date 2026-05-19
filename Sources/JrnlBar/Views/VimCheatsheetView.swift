@@ -24,11 +24,12 @@ struct VimCheatsheetView: View {
                     row("Esc", "back to normal mode")
                 }
                 section("Delete") {
-                    row("x", "delete character")
+                    row("x / X", "delete forward / backward (bounded by line)")
                     row("dd", "delete line (Ndd for N lines)")
                     row("dw / de", "delete word / through end of word")
                     row("db / d0 / d$", "delete back / to line start / end")
                     row("D", "delete to end of line")
+                    row("J", "join next line with a space (NJ for N joins)")
                 }
                 section("Change") {
                     row("cc", "empty line, enter insert")
@@ -43,12 +44,13 @@ struct VimCheatsheetView: View {
                     row("R", "overstrike mode — overwrite until Esc")
                 }
                 section("Visual selection") {
-                    row("v", "char-wise visual mode")
-                    row("V", "line-wise visual mode")
+                    row("v / V", "char-wise / line-wise visual mode")
+                    row("gv", "re-enter last visual selection")
                     row("Esc", "exit visual mode")
                     row("d / x", "delete selection")
                     row("y", "yank selection")
                     row("c", "change selection (delete + insert)")
+                    row("~ / U / u", "toggle / upper / lower case of selection")
                 }
                 section("Search") {
                     row("/<term>", "search forward (Enter to commit)")
@@ -83,7 +85,7 @@ struct VimCheatsheetView: View {
                     row("~", "toggle case of character under cursor")
                 }
                 section("Yank & paste") {
-                    row("yy", "yank current line (Nyy for N lines)")
+                    row("yy / Y", "yank current line (Nyy for N lines)")
                     row("yw / ye", "yank word")
                     row("p / P", "paste after / before")
                     row("Np", "paste N times")
