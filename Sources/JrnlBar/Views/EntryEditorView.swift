@@ -108,6 +108,13 @@ struct EntryEditorView: NSViewRepresentable {
         if context.coordinator.lastVimActive && !vimActiveNow {
             DispatchQueue.main.async {
                 if let window = textView.window {
+                    // Ensure the window can actually receive input —
+                    // there have been reports where the panel lost
+                    // key status during a focus shuffle and clicks
+                    // back into the editor weren't routing properly.
+                    if !window.isKeyWindow {
+                        window.makeKeyAndOrderFront(nil)
+                    }
                     window.makeFirstResponder(textView)
                 }
                 if let tv = textView as? JrnlTextView {
@@ -247,13 +254,16 @@ class JrnlTextView: NSTextView {
     }
 
     private func invalidateBlockCursorArea() {
-        guard let block = blockCursorRect() else { return }
-        setNeedsDisplay(block.insetBy(dx: -1, dy: -1))
+        // Force a full redraw rather than guessing rects. NSTextView's
+        // selectedRange writes can come at any time (mouse, vim engine,
+        // accessibility) and the OLD block position is hard to track
+        // reliably — partial invalidation was causing stale blocks
+        // ("double cursor") to linger after rapid moves. The text view
+        // is small in this app, so the cost is fine.
+        needsDisplay = true
     }
 
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
-        // Capture the OLD rect before AppKit moves the caret.
-        let oldRect = blockCursorRect()
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
 
         guard let vim = vimEngineProvider?() else { return }
@@ -261,23 +271,17 @@ class JrnlTextView: NSTextView {
         // VimEngine sets `selectedRange` directly, which bypasses
         // AppKit's normal scroll-to-reveal-cursor pipeline (that runs
         // only on insertText). Without this, j/k/G/gg/n walk the caret
-        // off screen. Gated on vim being active so unrelated paths
-        // (find-in-page, accessibility, etc.) keep AppKit's defaults.
-        // Skipped during mouse drag-select to avoid fighting AppKit's
-        // drag-scroll behavior.
+        // off screen. Skipped during mouse drag-select to avoid
+        // fighting AppKit's own drag-scroll.
         if !stillSelecting,
            let primary = (ranges.first as? NSValue)?.rangeValue {
             scrollRangeToVisible(NSRange(location: primary.location, length: 0))
         }
 
-        // Existing block-cursor invalidation — only when vim is in a
-        // block-cursor submode (outside insert).
-        guard vim.submode != .insert else { return }
-        if let oldRect {
-            setNeedsDisplay(oldRect.insetBy(dx: -1, dy: -1))
-        }
-        if let newRect = blockCursorRect() {
-            setNeedsDisplay(newRect.insetBy(dx: -1, dy: -1))
+        // Force a full redraw when vim is in a block-cursor submode so
+        // the previous block position is reliably erased.
+        if vim.submode != .insert {
+            needsDisplay = true
         }
     }
 

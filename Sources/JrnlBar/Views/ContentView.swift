@@ -106,6 +106,11 @@ public struct ContentView: View {
     private func exitCurrentMode() {
         currentMode = nil
         vimEngine = nil
+        // Defensive: the cheatsheet popover is anchored to the help
+        // icon which only shows while vim is active. If the binding
+        // got stuck true (rare but observed), the popover could keep
+        // absorbing events. Force it closed on every exit.
+        showVimCheatsheet = false
     }
 
     private var tagSuggestion: TagSuggestionView {
