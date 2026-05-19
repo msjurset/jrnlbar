@@ -291,13 +291,28 @@ class JrnlTextView: NSTextView {
         }
 
         let range = NSRange(location: cursor, length: 1)
+        let chAtCursor = ns.character(at: cursor)
         let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         var r = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
         r.origin.x += textContainerOrigin.x
         r.origin.y += textContainerOrigin.y
-        // A newline glyph has zero width; pad so the block is still visible.
-        if r.width <= 1 { r.size.width = 8 }
+
+        // On a newline (empty line, or end-of-line position), the layout
+        // manager reports a rect spanning the rest of the line. Vim shows
+        // a normal char-width block there, so narrow it back down.
+        if chAtCursor == 0x0A {
+            r.size.width = approximateCharWidth()
+        } else if r.width <= 1 {
+            r.size.width = approximateCharWidth()
+        }
         return r
+    }
+
+    private func approximateCharWidth() -> CGFloat {
+        guard let font else { return 8 }
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let size = ("M" as NSString).size(withAttributes: attributes)
+        return size.width > 0 ? size.width : 8
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {

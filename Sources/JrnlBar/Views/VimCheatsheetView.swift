@@ -55,6 +55,7 @@ struct VimCheatsheetView: View {
                 section("Search") {
                     row("/<term>", "search forward (Enter to commit)")
                     row("?<term>", "search backward")
+                    row("* / #", "search word under cursor forward / backward")
                     row("n / N", "repeat in same / opposite direction")
                     row("Esc", "cancel search input")
                 }

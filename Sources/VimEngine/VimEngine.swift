@@ -411,6 +411,18 @@ public final class VimEngine {
             if !searchTerm.isEmpty {
                 jumpToSearch(forward: !searchForward, count: n, editor: editor)
             }
+        case "*":
+            if let word = wordAtCursor(editor) {
+                searchTerm = word
+                searchForward = true
+                jumpToSearch(forward: true, count: n, editor: editor)
+            }
+        case "#":
+            if let word = wordAtCursor(editor) {
+                searchTerm = word
+                searchForward = false
+                jumpToSearch(forward: false, count: n, editor: editor)
+            }
         case "m":
             pendingMarkSet = true
         case "'":
@@ -1116,6 +1128,32 @@ public final class VimEngine {
             i -= 1
         }
         return nil
+    }
+
+    /// Returns the word (run of word-characters) that the cursor is on,
+    /// or — if the cursor sits on a non-word char — the next word on
+    /// the line, or `nil` if no word exists.
+    private func wordAtCursor(_ editor: VimTextEditor) -> String? {
+        let ns = editor.text as NSString
+        let cursor = editor.selectedRange.location
+        guard cursor < ns.length else { return nil }
+        var start = cursor
+        if !isWordCharacter(ns.character(at: start)) {
+            while start < ns.length, !isWordCharacter(ns.character(at: start)) {
+                if ns.character(at: start) == 0x0A { return nil }
+                start += 1
+            }
+            if start >= ns.length { return nil }
+        }
+        while start > 0, isWordCharacter(ns.character(at: start - 1)) {
+            start -= 1
+        }
+        var end = start
+        while end < ns.length, isWordCharacter(ns.character(at: end)) {
+            end += 1
+        }
+        guard end > start else { return nil }
+        return ns.substring(with: NSRange(location: start, length: end - start))
     }
 
     private func reverseFind(_ mode: PendingFind) -> PendingFind {

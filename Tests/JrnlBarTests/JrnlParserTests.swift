@@ -1439,6 +1439,36 @@ test("VimEngine: unset mark is a no-op") {
     expect(ed.selectedRange.location == 2, "cursor should stay put, got \(ed.selectedRange.location)")
 }
 
+test("VimEngine: * searches forward for word under cursor") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar foo baz foo", caret: 1)  // on 'o' of first foo
+    feed(engine, ["*"], on: ed)
+    expect(ed.selectedRange.location == 8, "second 'foo' at 8, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: # searches backward for word under cursor") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar foo baz foo", caret: 16)  // on 'f' of last foo
+    feed(engine, ["#"], on: ed)
+    expect(ed.selectedRange.location == 8, "middle 'foo' at 8, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: n after * continues the search") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar foo baz foo", caret: 0)
+    feed(engine, ["*", "n"], on: ed)
+    // * jumps to position 8 (next "foo"), n continues forward → position 16
+    expect(ed.selectedRange.location == 16, "third 'foo' at 16, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: * on a non-word char finds the next word") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar foo", caret: 3)  // on ' ' between foo and bar
+    feed(engine, ["*"], on: ed)
+    // Should search for "bar" (next word). Only one occurrence, wraps.
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
 // ─── Summary ───
 
 print("\n\(passed + failed) tests, \(passed) passed, \(failed) failed")
