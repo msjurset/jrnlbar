@@ -8,6 +8,26 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 
 ---
 
+## Shipped
+
+- [x] **Templates** — file-backed snippets read from
+      `~/.local/share/jrnl/templates/` (the same folder jrnl's
+      `--template` flag uses). Token substitution for
+      `{{date}}` / `{{time}}` / `{{weekday}}` / `{{cursor}}`. Four
+      defaults seeded on first launch.
+- [x] **Slash-command framework** — `/foo` autocomplete dropdown,
+      `//foo` escape, case-insensitive lookup, single registry for
+      file-backed templates + built-in mode commands.
+- [x] **`/uc`** — toggle uppercase typing transformation.
+- [x] **`/vim`** — full embedded vim editor mode with cheatsheet
+      popover. Engine lives in its own SwiftPM package at
+      [`msjurset/swift-vim-engine`](https://github.com/msjurset/swift-vim-engine).
+- [x] **Block cursor** in normal / command / visual modes (translucent
+      fill, one char wide). Beam in insert.
+- [x] **Cheatsheet popover** — `?` icon next to the VIM badge.
+- [x] **`make update-vim`** Makefile target — pulls the latest tagged
+      swift-vim-engine release in the configured version range.
+
 ## Integrations
 
 - [ ] **macOS Shortcuts action** — Expose an "Add jrnl entry" action to the
@@ -32,6 +52,12 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 
 ## UX
 
+- [ ] **Preferences window** — replace `defaults write`-only settings
+      (`externalEditorBundleID`) with a proper UI, plus a
+      "Reveal templates folder" button.
+- [ ] **Hotkey rebind** — let users change `Shift+Cmd+J` via the
+      Preferences window. Needs a custom hotkey recorder + dynamic
+      Carbon registration.
 - [ ] **Live markdown preview toggle** — Split or swap view showing the
       rendered markdown. The existing `MarkdownHighlighter` already knows
       the syntax; this is a rendering layer on top.
@@ -42,12 +68,6 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 - [ ] **Crash-safe draft autosave** — Persist the in-flight buffer to disk
       every N seconds (and on focus loss). On launch, restore the draft
       if non-empty. Survives app quit, panel close, crash.
-- [ ] **Templates** — User-defined snippets (morning standup, gratitude,
-      retro template, weekly review). Insert via a slash menu or a
-      template picker button. Stored in `~/Library/Application
-      Support/JrnlBar/templates/`.
-- [ ] **Quick-entry mode** — A second global hotkey that pops a single-line
-      text field, commits on Enter, no panel UI. For one-liners.
 - [ ] **Recent entries free-text filter** — Add a search field above the
       recents list that filters by body text in addition to the existing
       tag filter.
@@ -89,6 +109,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 - [ ] **Conflict detection** — If the journal file mtime changed while
       the JrnlBar editor was open (external `jrnl` CLI run, another
       tool, manual edit), warn before overwriting.
+- [ ] **Migrate to swift-vim-engine v2.0** — adopt the `@MainActor`
+      isolation, wrap the test target's top-level code in
+      `MainActor.assumeIsolated`. Currently pinned at v1.0.0.
 
 ## Intelligence (BYO API key, opt-in)
 
@@ -108,12 +131,21 @@ Privacy stance must be clear: nothing leaves the device without consent.
       embedding index rebuilt on save. Biggest payoff, biggest cost
       (embeddings storage, key management, privacy story).
 
+## Dropped
+
+- [-] **Quick-entry mode** — A second global hotkey that pops a
+      single-line text field. Dropped — the user already has two fast
+      paths to the same outcome (Shift+Cmd+J straight into the editor
+      with cursor focused, and a Ghostty pop-down terminal for one-line
+      `jrnl …` commands). Third path is clutter.
+
 ---
 
 ## Top 3 (current priorities)
 
-1. **Templates + quick-entry mode** — biggest daily-usage lift, no
-   external dependencies, fits the menu-bar ergonomic.
+1. **Preferences window + hotkey rebind** — finishes the slice 2 / 3
+   work from the original plan. Replaces `defaults write` for the
+   external editor and surfaces the templates folder.
 2. **Auto-detect jrnl path + crash-safe draft autosave** — invisible
    quality wins; users get fewer "lost the thing I typed" moments and
    the app works on more setups out of the box.
