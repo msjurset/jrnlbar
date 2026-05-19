@@ -91,7 +91,7 @@ class MarkdownHighlighter: NSObject, NSTextStorageDelegate {
 
         // Title detection: jrnl uses the first sentence (ending with . ? !) as the title
         if extendedRange.location == 0 {
-            if let titleEnd = findTitleEnd(in: textStorage.string) {
+            if let titleEnd = findTitleEnd(in: textStorage.string), titleEnd > 0 {
                 let titleRange = NSRange(location: 0, length: titleEnd)
                 textStorage.addAttribute(.font, value: titleFont, range: titleRange)
 
@@ -137,7 +137,12 @@ class MarkdownHighlighter: NSObject, NSTextStorageDelegate {
     /// Find the end of the line containing the given character index
     private func findEndOfLine(at index: Int, in string: String) -> Int? {
         let nsString = string as NSString
-        guard index < nsString.length else { return nsString.length }
+        // Negative indices arrive when the title ends at position 0
+        // (e.g. buffer starts with a newline after `O`). Treat them as
+        // "no line" — passing a negative location to lineRange raises
+        // NSRangeException, which leaves the textStorage in an
+        // inconsistent state and crashes the next draw.
+        guard index >= 0, index < nsString.length else { return nsString.length }
         let lineRange = nsString.lineRange(for: NSRange(location: index, length: 0))
         return lineRange.location + lineRange.length
     }
