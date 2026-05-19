@@ -9,12 +9,12 @@ let package = Package(
     ],
     dependencies: [
         // VimEngine lives in its own repo so other apps can depend on
-        // the same versioned package without copying files.
-        // Pinned exact while v1.0.1 (which added @MainActor — source-
-        // breaking for non-actor-isolated callers like the test target)
-        // is being sorted out. Bump to `from: "1.0.0"` after we either
-        // adapt the test code or re-tag the breaking change as 2.0.0.
-        .package(url: "https://github.com/msjurset/swift-vim-engine.git", exact: "1.0.0")
+        // the same versioned package without copying files. The 1.x
+        // range pre-dates the @MainActor isolation that landed in 2.0.
+        // Bumping to 2.0 will require the test target to acquire main
+        // actor isolation; do that as a deliberate migration, not a
+        // silent point-version bump.
+        .package(url: "https://github.com/msjurset/swift-vim-engine.git", from: "1.0.0")
     ],
     targets: [
         .target(
