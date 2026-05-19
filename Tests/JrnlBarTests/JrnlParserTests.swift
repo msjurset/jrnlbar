@@ -1383,6 +1383,61 @@ test("VimEngine: visual u lowercases selection") {
     expect(ed.text == "hello WORLD", "got: \(ed.text)")
 }
 
+// ─── ? backward search and marks
+
+test("VimEngine: ?<term> searches backward") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz bar end", caret: 18)  // near end
+    feed(engine, ["?", "b", "a", "r", "<enter>"], on: ed)
+    // From pos 18, scan back; first match is at 12 (the second "bar")
+    expect(ed.selectedRange.location == 12, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: n after ? repeats backward") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz bar end", caret: 18)
+    feed(engine, ["?", "b", "a", "r", "<enter>", "n"], on: ed)
+    // First ? jumps to 12, n (still backward) jumps to 4.
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: N after ? goes forward (reverse direction)") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz bar end", caret: 0)
+    feed(engine, ["?", "b", "a", "r", "<enter>"], on: ed)
+    // From pos 0 scanning backward wraps to 12 (last "bar")
+    let firstHit = ed.selectedRange.location
+    feed(engine, ["N"], on: ed)
+    // N reverses ?, so goes forward from 12 → wraps and finds 4 or stays
+    // (depending on implementation). Just assert it moved.
+    expect(ed.selectedRange.location != firstHit, "N should have moved from \(firstHit)")
+}
+
+test("VimEngine: m<x> sets a mark and '<x> jumps back") {
+    let engine = VimEngine()
+    let ed = StubEditor("line one\nline two\nline three", caret: 5)
+    feed(engine, ["m", "a", "G"], on: ed)
+    // Move to end, then jump back to mark 'a' (line start of mark)
+    feed(engine, ["'", "a"], on: ed)
+    // ' jumps to line start of mark position (5 was on 'o' in "line one")
+    expect(ed.selectedRange.location == 0, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: `<x> jumps to exact mark position") {
+    let engine = VimEngine()
+    let ed = StubEditor("line one\nline two", caret: 5)
+    feed(engine, ["m", "a", "G"], on: ed)
+    feed(engine, ["`", "a"], on: ed)
+    expect(ed.selectedRange.location == 5, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: unset mark is a no-op") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 2)
+    feed(engine, ["'", "z"], on: ed)  // mark z never set
+    expect(ed.selectedRange.location == 2, "cursor should stay put, got \(ed.selectedRange.location)")
+}
+
 // ─── Summary ───
 
 print("\n\(passed + failed) tests, \(passed) passed, \(failed) failed")

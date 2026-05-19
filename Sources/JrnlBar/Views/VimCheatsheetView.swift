@@ -54,8 +54,14 @@ struct VimCheatsheetView: View {
                 }
                 section("Search") {
                     row("/<term>", "search forward (Enter to commit)")
-                    row("n / N", "next / previous match")
+                    row("?<term>", "search backward")
+                    row("n / N", "repeat in same / opposite direction")
                     row("Esc", "cancel search input")
+                }
+                section("Marks") {
+                    row("m<a-z>", "set mark at current position")
+                    row("'<a-z>", "jump to line start of mark")
+                    row("`<a-z>", "jump to exact mark position")
                 }
                 section("Find in line") {
                     row("f<x>", "next occurrence of x on this line")

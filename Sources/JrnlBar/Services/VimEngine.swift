@@ -70,8 +70,15 @@ public final class VimEngine {
     // `.` repeat: closure recording the last text-mutating command,
     // replayed in the current editor when `.` is pressed.
     private var lastChange: ((VimTextEditor) -> Void)?
-    // Search state for `/`, `n`, `N`.
+    // Search state for `/`, `?`, `n`, `N`. `searchForward` is the
+    // direction the most recent search was initiated in; n repeats
+    // it and N inverts.
     private var searchTerm: String = ""
+    private var searchForward: Bool = true
+    // Letter marks (`m<a-z>` sets, `'<a-z>` / `` `<a-z>`` jump).
+    private var marks: [Character: Int] = [:]
+    private var pendingMarkSet: Bool = false
+    private var pendingMarkJumpExact: Bool? = nil  // nil = not pending; true = `` ` ``; false = `'`
 
     private enum PendingOperator {
         case delete
@@ -134,7 +141,7 @@ public final class VimEngine {
         case .replace: return "VIM:R"
         case .visual: return "VIM:V"
         case .visualLine: return "VIM:VL"
-        case .search: return "/\(searchTerm)"
+        case .search: return (searchForward ? "/" : "?") + searchTerm
         }
     }
 
@@ -171,6 +178,28 @@ public final class VimEngine {
             guard let chars, chars.count == 1, let target = chars.first else { return true }
             lastFind = (mode: mode, char: target)
             performFind(mode: mode, target: target, count: 1, editor: editor)
+            return true
+        }
+
+        // m<a-z> awaiting the mark letter to set.
+        if pendingMarkSet {
+            pendingMarkSet = false
+            if keyCode == 53 { return true }
+            guard let chars, chars.count == 1, let m = chars.first, m.isLetter else { return true }
+            marks[m] = editor.selectedRange.location
+            return true
+        }
+        // '<a-z> or `<a-z> awaiting the mark letter to jump to.
+        if let exact = pendingMarkJumpExact {
+            pendingMarkJumpExact = nil
+            if keyCode == 53 { return true }
+            guard let chars, chars.count == 1, let m = chars.first else { return true }
+            if let target = marks[m] {
+                let ns = editor.text as NSString
+                let safeTarget = min(max(0, target), ns.length)
+                let dest = exact ? safeTarget : lineStart(in: ns, of: safeTarget)
+                editor.selectedRange = NSRange(location: dest, length: 0)
+            }
             return true
         }
 
@@ -366,16 +395,28 @@ public final class VimEngine {
             applyVisualSelection(editor)
         case "/":
             searchTerm = ""
+            searchForward = true
+            setSubmode(.search)
+            onCommandBufferChanged?()
+        case "?":
+            searchTerm = ""
+            searchForward = false
             setSubmode(.search)
             onCommandBufferChanged?()
         case "n":
             if !searchTerm.isEmpty {
-                jumpToSearch(forward: true, count: n, editor: editor)
+                jumpToSearch(forward: searchForward, count: n, editor: editor)
             }
         case "N":
             if !searchTerm.isEmpty {
-                jumpToSearch(forward: false, count: n, editor: editor)
+                jumpToSearch(forward: !searchForward, count: n, editor: editor)
             }
+        case "m":
+            pendingMarkSet = true
+        case "'":
+            pendingMarkJumpExact = false
+        case "`":
+            pendingMarkJumpExact = true
         case "f":
             pendingFind = .findForward
         case "F":
@@ -957,7 +998,7 @@ public final class VimEngine {
         if keyCode == 36 {  // Enter — execute
             setSubmode(.normal)
             if !searchTerm.isEmpty {
-                jumpToSearch(forward: true, count: 1, editor: editor)
+                jumpToSearch(forward: searchForward, count: 1, editor: editor)
             }
             return true
         }
@@ -1158,6 +1199,8 @@ public final class VimEngine {
         pendingReplaceCount = 1
         pendingFind = nil
         pendingTextObjectAround = nil
+        pendingMarkSet = false
+        pendingMarkJumpExact = nil
     }
 
     // MARK: - Motion application
