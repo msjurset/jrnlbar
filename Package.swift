@@ -16,7 +16,7 @@ let package = Package(
         .target(
             name: "VimEngine",
             path: "Sources/VimEngine",
-            exclude: ["README.md"]
+            exclude: ["README.md", "INTEGRATION_PROMPT.md"]
         ),
         .target(
             name: "JrnlBarLib",
