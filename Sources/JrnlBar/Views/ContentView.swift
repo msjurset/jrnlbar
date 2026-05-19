@@ -1,5 +1,6 @@
 import SwiftUI
 import UserNotifications
+import VimEngine
 
 extension Notification.Name {
     public static let closePanel = Notification.Name("closePanel")

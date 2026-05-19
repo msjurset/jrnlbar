@@ -1,5 +1,6 @@
 import Foundation
 import JrnlBarLib
+import VimEngine
 
 // Minimal test harness (no Xcode required)
 var passed = 0

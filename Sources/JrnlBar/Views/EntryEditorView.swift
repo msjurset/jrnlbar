@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import VimEngine
 
 struct EntryEditorView: NSViewRepresentable {
     @Binding var text: String
