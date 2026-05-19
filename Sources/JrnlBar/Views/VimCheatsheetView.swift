@@ -37,6 +37,30 @@ struct VimCheatsheetView: View {
                 section("Replace") {
                     row("r<x>", "replace one character with x")
                     row("Nr<x>", "replace N characters with x")
+                    row("R", "overstrike mode — overwrite until Esc")
+                }
+                section("Visual selection") {
+                    row("v", "char-wise visual mode")
+                    row("V", "line-wise visual mode")
+                    row("Esc", "exit visual mode")
+                    row("d / x", "delete selection")
+                    row("y", "yank selection")
+                    row("c", "change selection (delete + insert)")
+                }
+                section("Search") {
+                    row("/<term>", "search forward (Enter to commit)")
+                    row("n / N", "next / previous match")
+                    row("Esc", "cancel search input")
+                }
+                section("Find in line") {
+                    row("f<x>", "next occurrence of x on this line")
+                    row("F<x>", "previous occurrence of x")
+                    row("t<x>", "next x, land just before it")
+                    row("T<x>", "previous x, land just after it")
+                    row("; / ,", "repeat last find / reverse")
+                }
+                section("Repeat") {
+                    row(".", "repeat last text-changing command")
                 }
                 section("Yank & paste") {
                     row("yy", "yank current line (Nyy for N lines)")

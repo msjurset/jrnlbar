@@ -300,6 +300,14 @@ class JrnlTextView: NSTextView {
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
+        // /vim R (replace) mode — overwrite the character at the caret
+        // rather than inserting, advancing the caret one position.
+        if let vim = vimEngineProvider?(), vim.submode == .replace,
+           let s = string as? String {
+            overwriteText(s)
+            return
+        }
+
         guard let mode = currentModeProvider?() else {
             super.insertText(string, replacementRange: replacementRange)
             return
@@ -311,6 +319,22 @@ class JrnlTextView: NSTextView {
             super.insertText(transformed, replacementRange: replacementRange)
         } else {
             super.insertText(string, replacementRange: replacementRange)
+        }
+    }
+
+    private func overwriteText(_ s: String) {
+        let ns = self.string as NSString
+        let cursor = selectedRange.location
+        // Don't overwrite newlines or extend past end of buffer.
+        let canOverwrite = cursor < ns.length && ns.character(at: cursor) != 0x0A
+        let range = canOverwrite
+            ? NSRange(location: cursor, length: 1)
+            : NSRange(location: cursor, length: 0)
+        if shouldChangeText(in: range, replacementString: s) {
+            replaceCharacters(in: range, with: s)
+            didChangeText()
+            let newLoc = cursor + (s as NSString).length
+            setSelectedRange(NSRange(location: newLoc, length: 0))
         }
     }
 

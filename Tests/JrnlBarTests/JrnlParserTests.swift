@@ -881,6 +881,190 @@ test("VimEngine: ce changes through end of word and enters insert") {
     expect(engine.submode == .insert)
 }
 
+// ─── VimEngine: R (overstrike), . (repeat), v/V (visual), / (search), f/t
+
+test("VimEngine: R enters replace submode") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 0)
+    feed(engine, ["R"], on: ed)
+    expect(engine.submode == .replace, "expected replace, got \(engine.submode)")
+    expect(engine.badge == "VIM:R")
+}
+
+test("VimEngine: R then Esc returns to normal") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 0)
+    feed(engine, ["R", "<esc>"], on: ed)
+    expect(engine.submode == .normal)
+}
+
+test("VimEngine: . repeats x") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["x"], on: ed)
+    expect(ed.text == "bcdef")
+    feed(engine, ["."], on: ed)
+    expect(ed.text == "cdef", "got: \(ed.text)")
+}
+
+test("VimEngine: . repeats dd") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree\nfour", caret: 0)
+    feed(engine, ["d", "d"], on: ed)
+    expect(ed.text == "two\nthree\nfour")
+    feed(engine, ["."], on: ed)
+    expect(ed.text == "three\nfour", "got: \(ed.text)")
+}
+
+test("VimEngine: . repeats r<x>") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["r", "Z"], on: ed)
+    expect(ed.text == "Zbcdef")
+    feed(engine, ["l", "."], on: ed)
+    expect(ed.text == "ZZcdef", "got: \(ed.text)")
+}
+
+test("VimEngine: yank is NOT recorded as a change") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["x"], on: ed)        // delete "a" → "bcdef" + recorded
+    feed(engine, ["y", "y"], on: ed)   // yank (not a change)
+    feed(engine, ["."], on: ed)        // should still repeat x, not yy
+    expect(ed.text == "cdef", "got: \(ed.text)")
+}
+
+test("VimEngine: v enters visual mode and selects character at cursor") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 2)
+    feed(engine, ["v"], on: ed)
+    expect(engine.submode == .visual)
+    expect(ed.selectedRange.location == 2 && ed.selectedRange.length == 1, "got \(ed.selectedRange)")
+}
+
+test("VimEngine: v then l extends selection to right") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["v", "l", "l"], on: ed)
+    // anchor 0, cursor 2 → selection covers [0..2] inclusive = length 3
+    expect(ed.selectedRange.location == 0 && ed.selectedRange.length == 3, "got \(ed.selectedRange)")
+}
+
+test("VimEngine: visual d deletes selection and returns to normal") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["v", "l", "l", "d"], on: ed)
+    expect(ed.text == "def", "got: \(ed.text)")
+    expect(engine.submode == .normal)
+}
+
+test("VimEngine: visual y yanks and returns to normal") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["v", "l", "l", "y", "$", "p"], on: ed)
+    // yanked "abc", cursor on 'f' (end of line), p pastes after → "abcdefabc"
+    expect(ed.text == "abcdefabc", "got: \(ed.text)")
+}
+
+test("VimEngine: visual c deletes selection and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["v", "l", "l", "c"], on: ed)
+    expect(ed.text == "def", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: V selects whole line") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree", caret: 5)
+    feed(engine, ["V"], on: ed)
+    expect(engine.submode == .visualLine)
+    // Should select all of "two\n"
+    expect(ed.selectedRange.location == 4 && ed.selectedRange.length == 4, "got \(ed.selectedRange)")
+}
+
+test("VimEngine: V then d deletes line(s)") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree", caret: 5)
+    feed(engine, ["V", "d"], on: ed)
+    expect(ed.text == "one\nthree", "got: \(ed.text)")
+}
+
+test("VimEngine: visual Esc cancels selection") {
+    let engine = VimEngine()
+    let ed = StubEditor("abcdef", caret: 0)
+    feed(engine, ["v", "l", "l", "<esc>"], on: ed)
+    expect(engine.submode == .normal)
+    expect(ed.selectedRange.length == 0, "selection should collapse")
+}
+
+test("VimEngine: / followed by term + Enter jumps to first match") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz bar", caret: 0)
+    feed(engine, ["/", "b", "a", "r", "<enter>"], on: ed)
+    expect(ed.selectedRange.location == 4, "first 'bar' at 4, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: n repeats search forward") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz bar", caret: 0)
+    feed(engine, ["/", "b", "a", "r", "<enter>", "n"], on: ed)
+    expect(ed.selectedRange.location == 12, "second 'bar' at 12, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: N goes backward, wrapping") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz bar", caret: 13)
+    feed(engine, ["/", "b", "a", "r", "<enter>", "N"], on: ed)
+    // first match from 13 jumps forward and wraps to first occurrence at 4.
+    // Then N from 4 goes back, wrapping to 12.
+    expect(ed.selectedRange.location == 12 || ed.selectedRange.location == 4,
+           "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: f<char> finds next occurrence on line") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 0)
+    feed(engine, ["f", "o"], on: ed)
+    expect(ed.selectedRange.location == 4, "first 'o' at 4, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: t<char> lands one before the target") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 0)
+    feed(engine, ["t", "w"], on: ed)
+    expect(ed.selectedRange.location == 5, "should land at space before 'w', got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: F<char> finds backward on line") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 10)
+    feed(engine, ["F", "l"], on: ed)
+    expect(ed.selectedRange.location == 9, "last 'l' before pos 10 is 9, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: f does not cross line boundaries") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, ["f", "w"], on: ed)
+    expect(ed.selectedRange.location == 0, "'w' is on next line, should stay put; got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: ; repeats last find") {
+    let engine = VimEngine()
+    let ed = StubEditor("the quick brown fox", caret: 0)
+    feed(engine, ["f", " ", ";"], on: ed)
+    expect(ed.selectedRange.location == 9, "second space at 9, got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: , reverses last find") {
+    let engine = VimEngine()
+    let ed = StubEditor("the quick brown fox", caret: 0)
+    feed(engine, ["f", " ", ";", ","], on: ed)
+    // f' ' → 3; ; → 9; , reverses → 3
+    expect(ed.selectedRange.location == 3, "got \(ed.selectedRange.location)")
+}
+
 // ─── Summary ───
 
 print("\n\(passed + failed) tests, \(passed) passed, \(failed) failed")

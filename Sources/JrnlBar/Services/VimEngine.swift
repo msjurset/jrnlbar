@@ -30,7 +30,7 @@ extension VimTextEditor {
 /// `VimEngineTests` for the exhaustive behavior contract.
 public final class VimEngine {
     public enum Submode: String {
-        case normal, insert, command
+        case normal, insert, command, replace, visual, visualLine, search
     }
 
     public private(set) var submode: Submode = .normal
@@ -48,15 +48,36 @@ public final class VimEngine {
     private var pendingG: Bool = false
     private var pendingReplace: Bool = false
     private var pendingReplaceCount: Int = 1
+    // r<char> and f/F/t/T are "pending-next-char" states.
+    private var pendingFind: PendingFind?
+    private var lastFind: (mode: PendingFind, char: Character)?
     // Yank/delete register. Linewise contents end with `\n` and paste
     // as new lines; characterwise paste inline at/after the caret.
     private var register: String = ""
     private var registerIsLine: Bool = false
+    // Visual mode endpoints. anchor is fixed; cursor is the moving end.
+    // We track cursor ourselves because once the selection has length,
+    // editor.selectedRange.location always reports the lower bound.
+    private var visualAnchor: Int = 0
+    private var visualCursor: Int = 0
+    // `.` repeat: closure recording the last text-mutating command,
+    // replayed in the current editor when `.` is pressed.
+    private var lastChange: ((VimTextEditor) -> Void)?
+    // Search state for `/`, `n`, `N`.
+    private var searchTerm: String = ""
 
     private enum PendingOperator {
         case delete
         case yank
         case change
+    }
+
+    /// Pending "next char" find mode set by f/F/t/T.
+    public enum PendingFind: Hashable {
+        case findForward      // f<x> — land on the char
+        case findBackward     // F<x> — backward, land on the char
+        case tilForward       // t<x> — land one before the char
+        case tilBackward      // T<x> — backward, land one after the char
     }
 
     private enum Motion {
@@ -84,6 +105,10 @@ public final class VimEngine {
         case .normal: return handleNormal(chars: chars, keyCode: keyCode, modifiers: modifiers, editor: editor)
         case .insert: return handleInsert(chars: chars, keyCode: keyCode, modifiers: modifiers, editor: editor)
         case .command: return handleCommand(chars: chars, keyCode: keyCode, modifiers: modifiers, editor: editor)
+        case .replace: return handleReplace(chars: chars, keyCode: keyCode, modifiers: modifiers, editor: editor)
+        case .visual, .visualLine:
+            return handleVisual(chars: chars, keyCode: keyCode, modifiers: modifiers, editor: editor)
+        case .search: return handleSearch(chars: chars, keyCode: keyCode, modifiers: modifiers, editor: editor)
         }
     }
 
@@ -93,6 +118,10 @@ public final class VimEngine {
         case .normal: return "VIM:N"
         case .insert: return "VIM:I"
         case .command: return ":\(commandBuffer)"
+        case .replace: return "VIM:R"
+        case .visual: return "VIM:V"
+        case .visualLine: return "VIM:VL"
+        case .search: return "/\(searchTerm)"
         }
     }
 
@@ -114,7 +143,21 @@ public final class VimEngine {
             pendingReplaceCount = 1
             if keyCode == 53 { return true }
             guard let chars, chars.count == 1 else { return true }
-            replaceCharAtCaret(with: chars, count: n, editor: editor)
+            let captured = chars
+            replaceCharAtCaret(with: captured, count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.replaceCharAtCaret(with: captured, count: n, editor: ed)
+            }
+            return true
+        }
+
+        // f/F/t/T awaiting their target character.
+        if let mode = pendingFind {
+            pendingFind = nil
+            if keyCode == 53 { return true }  // Esc cancels
+            guard let chars, chars.count == 1, let target = chars.first else { return true }
+            lastFind = (mode: mode, char: target)
+            performFind(mode: mode, target: target, count: 1, editor: editor)
             return true
         }
 
@@ -201,6 +244,9 @@ public final class VimEngine {
             setSubmode(.insert)
         case "x":
             deleteCharAtCaret(count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.deleteCharAtCaret(count: n, editor: ed)
+            }
         case "d":
             pendingOperator = .delete
             pendingOperatorCount = n
@@ -211,23 +257,79 @@ public final class VimEngine {
             pendingOperator = .change
             pendingOperatorCount = n
         case "C":
-            // Shortcut for c$ — change to end of line.
             deleteOverMotion(.lineEnd, count: n, editor: editor)
             setSubmode(.insert)
+            recordChange { [weak self] ed in
+                self?.deleteOverMotion(.lineEnd, count: n, editor: ed)
+            }
         case "D":
-            // Shortcut for d$ — delete to end of line.
             deleteOverMotion(.lineEnd, count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.deleteOverMotion(.lineEnd, count: n, editor: ed)
+            }
         case "s":
-            // Shortcut for cl — substitute char (delete one char, insert).
             deleteCharAtCaret(count: n, editor: editor)
             setSubmode(.insert)
+            recordChange { [weak self] ed in
+                self?.deleteCharAtCaret(count: n, editor: ed)
+            }
         case "r":
             pendingReplace = true
             pendingReplaceCount = n
+        case "R":
+            setSubmode(.replace)
         case "p":
             paste(after: true, count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.paste(after: true, count: n, editor: ed)
+            }
         case "P":
             paste(after: false, count: n, editor: editor)
+            recordChange { [weak self] ed in
+                self?.paste(after: false, count: n, editor: ed)
+            }
+        case "v":
+            let pos = editor.selectedRange.location
+            visualAnchor = pos
+            visualCursor = pos
+            setSubmode(.visual)
+            applyVisualSelection(editor)
+        case "V":
+            let pos = editor.selectedRange.location
+            visualAnchor = pos
+            visualCursor = pos
+            setSubmode(.visualLine)
+            applyVisualSelection(editor)
+        case "/":
+            searchTerm = ""
+            setSubmode(.search)
+            onCommandBufferChanged?()
+        case "n":
+            if !searchTerm.isEmpty {
+                jumpToSearch(forward: true, count: n, editor: editor)
+            }
+        case "N":
+            if !searchTerm.isEmpty {
+                jumpToSearch(forward: false, count: n, editor: editor)
+            }
+        case "f":
+            pendingFind = .findForward
+        case "F":
+            pendingFind = .findBackward
+        case "t":
+            pendingFind = .tilForward
+        case "T":
+            pendingFind = .tilBackward
+        case ";":
+            if let last = lastFind {
+                performFind(mode: last.mode, target: last.char, count: n, editor: editor)
+            }
+        case ",":
+            if let last = lastFind {
+                performFind(mode: reverseFind(last.mode), target: last.char, count: n, editor: editor)
+            }
+        case ".":
+            lastChange?(editor)
         case "u":
             editor.vimUndo()
         case ":":
@@ -247,10 +349,13 @@ public final class VimEngine {
         case .delete:
             if motionChar == "d" {
                 deleteLines(count: count, editor: editor)
+                recordChange { [weak self] ed in self?.deleteLines(count: count, editor: ed) }
             } else if let motion = motionFor(motionChar) {
                 deleteOverMotion(motion, count: count, editor: editor)
+                recordChange { [weak self] ed in self?.deleteOverMotion(motion, count: count, editor: ed) }
             }
         case .yank:
+            // Yank is not a "change" — don't record for `.`.
             if motionChar == "y" {
                 yankLines(count: count, editor: editor)
             } else if let motion = motionFor(motionChar) {
@@ -259,9 +364,13 @@ public final class VimEngine {
         case .change:
             if motionChar == "c" {
                 changeLines(count: count, editor: editor)
+                recordChange { [weak self] ed in self?.changeLines(count: count, editor: ed) }
             } else if let motion = motionFor(motionChar) {
                 deleteOverMotion(motion, count: count, editor: editor)
                 setSubmode(.insert)
+                recordChange { [weak self] ed in
+                    self?.deleteOverMotion(motion, count: count, editor: ed)
+                }
             }
         }
     }
@@ -298,6 +407,331 @@ public final class VimEngine {
             return true
         }
         return false
+    }
+
+    // MARK: - Replace (R) mode
+
+    private func handleReplace(chars: String?, keyCode: UInt16, modifiers: KeyModifiers, editor: VimTextEditor) -> Bool {
+        // Esc returns to normal; everything else falls through to the
+        // text view, where insertText overwrites the character at the
+        // caret rather than inserting.
+        if keyCode == 53 {
+            setSubmode(.normal)
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Visual mode
+
+    private func handleVisual(chars: String?, keyCode: UInt16, modifiers: KeyModifiers, editor: VimTextEditor) -> Bool {
+        // Esc cancels visual without operating.
+        if keyCode == 53 {
+            collapseVisual(editor)
+            setSubmode(.normal)
+            return true
+        }
+
+        // Arrow keys: same as h/j/k/l in visual mode.
+        switch keyCode {
+        case 123: applyVisualMotion(.left, count: 1, editor: editor); return true
+        case 124: applyVisualMotion(.right, count: 1, editor: editor); return true
+        case 125: applyVisualMotion(.down, count: 1, editor: editor); return true
+        case 126: applyVisualMotion(.up, count: 1, editor: editor); return true
+        default: break
+        }
+
+        guard let chars, chars.count == 1, let c = chars.first else { return true }
+
+        // Count digits.
+        if c.isASCII, c.isNumber {
+            if c == "0" && countBuffer.isEmpty {
+                applyVisualMotion(.lineStart, count: 1, editor: editor)
+                return true
+            }
+            countBuffer.append(c)
+            return true
+        }
+
+        let n = max(1, Int(countBuffer) ?? 1)
+        countBuffer = ""
+
+        // Pending `g` for `gg` / `ge`.
+        if pendingG {
+            pendingG = false
+            switch c {
+            case "g": applyVisualMotion(.bufferStart, count: 1, editor: editor)
+            case "e": applyVisualMotion(.previousWordEnd, count: 1, editor: editor)
+            default: break
+            }
+            return true
+        }
+
+        switch c {
+        // Movement — extends the selection.
+        case "h": applyVisualMotion(.left, count: n, editor: editor)
+        case "j": applyVisualMotion(.down, count: n, editor: editor)
+        case "k": applyVisualMotion(.up, count: n, editor: editor)
+        case "l": applyVisualMotion(.right, count: n, editor: editor)
+        case "w": applyVisualMotion(.wordForward, count: n, editor: editor)
+        case "b": applyVisualMotion(.wordBackward, count: n, editor: editor)
+        case "e": applyVisualMotion(.wordEnd, count: n, editor: editor)
+        case "g": pendingG = true
+        case "G": applyVisualMotion(.bufferEnd, count: 1, editor: editor)
+        case "0": applyVisualMotion(.lineStart, count: 1, editor: editor)
+        case "^": applyVisualMotion(.lineFirstNonBlank, count: 1, editor: editor)
+        case "$": applyVisualMotion(.lineEnd, count: 1, editor: editor)
+
+        // Operators — apply to the current selection.
+        case "d", "x":
+            deleteSelection(editor)
+            setSubmode(.normal)
+        case "y":
+            yankSelection(editor)
+            collapseVisual(editor)
+            setSubmode(.normal)
+        case "c":
+            deleteSelection(editor)
+            setSubmode(.insert)
+        case "v":
+            // Toggle out of charwise visual.
+            if submode == .visual {
+                collapseVisual(editor)
+                setSubmode(.normal)
+            } else {
+                setSubmode(.visual)
+                applyVisualSelection(editor)
+            }
+        case "V":
+            // Toggle linewise visual.
+            if submode == .visualLine {
+                collapseVisual(editor)
+                setSubmode(.normal)
+            } else {
+                setSubmode(.visualLine)
+                applyVisualSelection(editor)
+            }
+        case ":":
+            // Allow leaving visual into command mode; rare but useful.
+            collapseVisual(editor)
+            commandBuffer = ""
+            setSubmode(.command)
+            onCommandBufferChanged?()
+        default:
+            break
+        }
+        return true
+    }
+
+    private func applyVisualMotion(_ motion: Motion, count: Int, editor: VimTextEditor) {
+        let newLoc: Int
+        if motion == .down, let target = editor.visualLineLocation(from: visualCursor, lines: count) {
+            newLoc = target
+        } else if motion == .up, let target = editor.visualLineLocation(from: visualCursor, lines: -count) {
+            newLoc = target
+        } else {
+            newLoc = computeMotion(motion, count: count, text: editor.text, from: visualCursor)
+        }
+        visualCursor = newLoc
+        applyVisualSelection(editor)
+    }
+
+    private func applyVisualSelection(_ editor: VimTextEditor) {
+        let ns = editor.text as NSString
+        let length = ns.length
+        guard length > 0 else { return }
+
+        let lo = min(visualAnchor, visualCursor)
+        let hiInclusive = min(max(visualAnchor, visualCursor), length - 1)
+
+        if submode == .visualLine {
+            let firstLineStart = lineStart(in: ns, of: lo)
+            let lastLineEnd = lineEnd(in: ns, of: hiInclusive)
+            let endIncludingNewline = min(length, lastLineEnd + 1)
+            editor.selectedRange = NSRange(location: firstLineStart, length: endIncludingNewline - firstLineStart)
+        } else {
+            let inclusiveEnd = min(length, hiInclusive + 1)
+            editor.selectedRange = NSRange(location: lo, length: max(0, inclusiveEnd - lo))
+        }
+    }
+
+    private func collapseVisual(_ editor: VimTextEditor) {
+        // Land at the moving end (where the user has been "looking").
+        editor.selectedRange = NSRange(location: visualCursor, length: 0)
+    }
+
+    private func deleteSelection(_ editor: VimTextEditor) {
+        let sel = editor.selectedRange
+        guard sel.length > 0 else { return }
+        let ns = editor.text as NSString
+        register = ns.substring(with: sel)
+        registerIsLine = (submode == .visualLine)
+        editor.replace(in: sel, with: "")
+        editor.selectedRange = NSRange(location: sel.location, length: 0)
+        recordChange { [weak self] ed in
+            // The replay applies starting at the current caret, deleting
+            // a region of the same length. Not perfect (vim's visual
+            // replay re-selects), but useful for the common case.
+            guard let self else { return }
+            let len = (self.register as NSString).length
+            let start = ed.selectedRange.location
+            let edEnd = min((ed.text as NSString).length, start + len)
+            ed.replace(in: NSRange(location: start, length: edEnd - start), with: "")
+        }
+    }
+
+    private func yankSelection(_ editor: VimTextEditor) {
+        let sel = editor.selectedRange
+        guard sel.length > 0 else { return }
+        register = (editor.text as NSString).substring(with: sel)
+        registerIsLine = (submode == .visualLine)
+    }
+
+    // MARK: - Search (/, n, N)
+
+    private func handleSearch(chars: String?, keyCode: UInt16, modifiers: KeyModifiers, editor: VimTextEditor) -> Bool {
+        if keyCode == 53 {  // Escape — cancel
+            searchTerm = ""
+            onCommandBufferChanged?()
+            setSubmode(.normal)
+            return true
+        }
+        if keyCode == 36 {  // Enter — execute
+            setSubmode(.normal)
+            if !searchTerm.isEmpty {
+                jumpToSearch(forward: true, count: 1, editor: editor)
+            }
+            return true
+        }
+        if keyCode == 51 {  // Backspace
+            if searchTerm.isEmpty {
+                setSubmode(.normal)
+            } else {
+                searchTerm.removeLast()
+                onCommandBufferChanged?()
+            }
+            return true
+        }
+        if let chars, chars.count == 1, let c = chars.first, c.isASCII {
+            searchTerm.append(c)
+            onCommandBufferChanged?()
+        }
+        return true
+    }
+
+    private func jumpToSearch(forward: Bool, count: Int, editor: VimTextEditor) {
+        guard !searchTerm.isEmpty else { return }
+        let ns = editor.text as NSString
+        let length = ns.length
+        guard length > 0 else { return }
+
+        var pos = editor.selectedRange.location
+        for _ in 0..<count {
+            let next = forward
+                ? nextOccurrence(of: searchTerm, in: ns, after: pos)
+                : previousOccurrence(of: searchTerm, in: ns, before: pos)
+            guard let landing = next else { return }
+            pos = landing
+        }
+        editor.selectedRange = NSRange(location: pos, length: 0)
+    }
+
+    private func nextOccurrence(of term: String, in text: NSString, after pos: Int) -> Int? {
+        let length = text.length
+        if length == 0 { return nil }
+        // Search from pos+1 to end, wrapping to start.
+        let start = min(pos + 1, length)
+        let firstHalf = text.range(of: term, options: [], range: NSRange(location: start, length: length - start))
+        if firstHalf.location != NSNotFound { return firstHalf.location }
+        let secondHalf = text.range(of: term, options: [], range: NSRange(location: 0, length: max(0, start)))
+        if secondHalf.location != NSNotFound { return secondHalf.location }
+        return nil
+    }
+
+    private func previousOccurrence(of term: String, in text: NSString, before pos: Int) -> Int? {
+        let length = text.length
+        if length == 0 { return nil }
+        // Search up to pos backward; if none, wrap from end.
+        let firstHalf = text.range(of: term, options: [.backwards], range: NSRange(location: 0, length: max(0, pos)))
+        if firstHalf.location != NSNotFound { return firstHalf.location }
+        let secondHalf = text.range(of: term, options: [.backwards], range: NSRange(location: pos, length: length - pos))
+        if secondHalf.location != NSNotFound { return secondHalf.location }
+        return nil
+    }
+
+    // MARK: - Find (f/F/t/T)
+
+    private func performFind(mode: PendingFind, target: Character, count: Int, editor: VimTextEditor) {
+        let ns = editor.text as NSString
+        let length = ns.length
+        guard length > 0 else { return }
+        let cursor = editor.selectedRange.location
+        let line = (
+            start: lineStart(in: ns, of: cursor),
+            end: lineEnd(in: ns, of: cursor)
+        )
+        var pos = cursor
+        for _ in 0..<count {
+            let nextPos: Int?
+            switch mode {
+            case .findForward:
+                nextPos = findCharForward(target, in: ns, from: pos + 1, lineEnd: line.end)
+            case .findBackward:
+                nextPos = findCharBackward(target, in: ns, from: pos - 1, lineStart: line.start)
+            case .tilForward:
+                if let hit = findCharForward(target, in: ns, from: pos + 2, lineEnd: line.end) {
+                    nextPos = hit - 1
+                } else {
+                    nextPos = nil
+                }
+            case .tilBackward:
+                if let hit = findCharBackward(target, in: ns, from: pos - 2, lineStart: line.start) {
+                    nextPos = hit + 1
+                } else {
+                    nextPos = nil
+                }
+            }
+            guard let landing = nextPos else { return }
+            pos = landing
+        }
+        editor.selectedRange = NSRange(location: pos, length: 0)
+    }
+
+    private func findCharForward(_ target: Character, in text: NSString, from start: Int, lineEnd: Int) -> Int? {
+        var i = max(0, start)
+        while i < min(text.length, lineEnd) {
+            if let scalar = Unicode.Scalar(text.character(at: i)), Character(scalar) == target {
+                return i
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private func findCharBackward(_ target: Character, in text: NSString, from start: Int, lineStart: Int) -> Int? {
+        var i = min(text.length - 1, start)
+        while i >= lineStart {
+            if let scalar = Unicode.Scalar(text.character(at: i)), Character(scalar) == target {
+                return i
+            }
+            i -= 1
+        }
+        return nil
+    }
+
+    private func reverseFind(_ mode: PendingFind) -> PendingFind {
+        switch mode {
+        case .findForward: return .findBackward
+        case .findBackward: return .findForward
+        case .tilForward: return .tilBackward
+        case .tilBackward: return .tilForward
+        }
+    }
+
+    // MARK: - Change recording (.)
+
+    private func recordChange(_ action: @escaping (VimTextEditor) -> Void) {
+        lastChange = action
     }
 
     // MARK: - Command mode
@@ -363,6 +797,7 @@ public final class VimEngine {
         pendingG = false
         pendingReplace = false
         pendingReplaceCount = 1
+        pendingFind = nil
     }
 
     // MARK: - Motion application
