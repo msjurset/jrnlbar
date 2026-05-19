@@ -76,9 +76,11 @@ UI.
 ## Supported commands (highlights)
 
 **Movement**: `h j k l` (visual lines), `gj gk` (logical lines),
-`w b e`, `ge`, `W B E`, `0 ^ $`, `gg G`, `{ }`, `%`, `f<x> F<x> t<x>
-T<x>`, `; ,`, `Ctrl-d Ctrl-u` (half-page), `zz zt zb` (scroll cursor
-to center / top / bottom), arrow keys.
+`w b e`, `ge`, `W B E`, `0 ^ $`, `gg G`, `NG`/`Ngg`/`:N<Enter>` (jump
+to line N), `{ }`, `%`, `f<x> F<x> t<x> T<x>`, `; ,`, `Ctrl-d Ctrl-u`
+(half-page), `Ctrl-f Ctrl-b` (full-page), `H M L` (top / middle /
+bottom visible line), `zz zt zb` (scroll cursor line to center / top
+/ bottom), arrow keys.
 
 **Insert mode**: `i a I A o O s` enter; `Esc` returns.
 
@@ -112,19 +114,22 @@ characters typed in insert mode after `i/a/I/A/o/O/s/c{motion}/cc/C`.
 
 ## Viewport-aware commands
 
-`Ctrl-d` / `Ctrl-u` need a viewport line count. `zz` / `zt` / `zb`
-need a way to scroll a specific line into a vertical position. Both
-go through optional `VimTextEditor` methods with no-op defaults:
+`Ctrl-d`/`Ctrl-u`/`Ctrl-f`/`Ctrl-b` need a viewport line count.
+`zz`/`zt`/`zb` need to scroll a specific line into a vertical
+position. `H`/`M`/`L` need to know what line currently sits at a
+given viewport slot. All three go through optional `VimTextEditor`
+methods with no-op defaults:
 
 ```swift
 func viewportLineCount() -> Int?
 func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment)
+func visibleLineLocation(at position: VimViewportPosition) -> Int?
 ```
 
-NSTextView's built-in conformance implements both via
+NSTextView's built-in conformance implements all three via
 `enclosingScrollView`. Stubs (and editors without a scroll view) get
-the defaults — Ctrl-d falls back to ~10 logical lines; zz/zt/zb
-become silent no-ops.
+the defaults — Ctrl-d/u/f/b fall back to ~10/20 logical lines;
+zz/zt/zb become silent no-ops; H/M/L become no-ops.
 
 ## Deliberate limitations
 

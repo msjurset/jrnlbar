@@ -208,7 +208,7 @@ Smoke test after integration:
 
 ## Don't add features
 
-The engine is feature-complete enough (~280 unit tests in the source repo).
+The engine is feature-complete enough (~290 unit tests in the source repo).
 The cheatsheet view lists every supported command. If something feels
 missing, check that first — it's probably already there. Deliberate
 omissions are documented in `Sources/VimEngine/README.md` under "Deliberate

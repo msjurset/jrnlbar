@@ -26,16 +26,25 @@ public protocol VimTextEditor: AnyObject {
     /// offset sits at the requested vertical alignment in the viewport.
     /// No-op for editors without a viewport.
     func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment)
+    /// Returns the character offset at the start of the line currently
+    /// visible at the given viewport position. nil when no viewport.
+    /// Used by H / M / L.
+    func visibleLineLocation(at position: VimViewportPosition) -> Int?
 }
 
 public enum VimLineAlignment {
     case top, center, bottom
 }
 
+public enum VimViewportPosition {
+    case top, middle, bottom
+}
+
 extension VimTextEditor {
     public func visualLineLocation(from: Int, lines: Int) -> Int? { nil }
     public func viewportLineCount() -> Int? { nil }
     public func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment) {}
+    public func visibleLineLocation(at position: VimViewportPosition) -> Int? { nil }
 }
 
 /// Subset of vim sufficient for "fast keyboard edits to a short
@@ -197,6 +206,15 @@ public final class VimEngine {
             halfPageScroll(forward: false, editor: editor)
             return true
         }
+        // Ctrl-f / Ctrl-b = full-page scroll down/up.
+        if modifiers.contains(.control), chars == "f" {
+            fullPageScroll(forward: true, editor: editor)
+            return true
+        }
+        if modifiers.contains(.control), chars == "b" {
+            fullPageScroll(forward: false, editor: editor)
+            return true
+        }
 
         // r<char> awaiting its replacement character. Esc cancels.
         if pendingReplace {
@@ -277,6 +295,7 @@ public final class VimEngine {
             return true
         }
 
+        let hadCount = !countBuffer.isEmpty
         let n = max(1, Int(countBuffer) ?? 1)
         countBuffer = ""
 
@@ -306,7 +325,12 @@ public final class VimEngine {
             let gn = pendingGCount
             pendingGCount = 1
             switch c {
-            case "g": applyMotion(.bufferStart, count: 1, editor: editor)
+            case "g":
+                if gn > 1 {
+                    gotoLine(gn, editor: editor)
+                } else {
+                    applyMotion(.bufferStart, count: 1, editor: editor)
+                }
             case "e": applyMotion(.previousWordEnd, count: 1, editor: editor)
             case "j":
                 // Explicit logical-line down (bare `j` already moves
@@ -361,7 +385,24 @@ public final class VimEngine {
             recordChange { [weak self] ed in
                 self?.toggleCaseAtCaret(count: n, editor: ed)
             }
-        case "G": applyMotion(.bufferEnd, count: 1, editor: editor)
+        case "G":
+            if hadCount {
+                gotoLine(n, editor: editor)
+            } else {
+                applyMotion(.bufferEnd, count: 1, editor: editor)
+            }
+        case "H":
+            if let target = editor.visibleLineLocation(at: .top) {
+                editor.selectedRange = NSRange(location: target, length: 0)
+            }
+        case "M":
+            if let target = editor.visibleLineLocation(at: .middle) {
+                editor.selectedRange = NSRange(location: target, length: 0)
+            }
+        case "L":
+            if let target = editor.visibleLineLocation(at: .bottom) {
+                editor.selectedRange = NSRange(location: target, length: 0)
+            }
         case "g":
             pendingG = true
             pendingGCount = n
@@ -1419,8 +1460,15 @@ public final class VimEngine {
     /// lines. Scroll-to-visible (handled by the host's
     /// setSelectedRanges override) pulls the viewport along.
     private func halfPageScroll(forward: Bool, editor: VimTextEditor) {
-        let viewport = editor.viewportLineCount() ?? 20
-        let lines = max(1, viewport / 2)
+        scrollLines(by: max(1, (editor.viewportLineCount() ?? 20) / 2), forward: forward, editor: editor)
+    }
+
+    /// Ctrl-f / Ctrl-b — full-page scroll.
+    private func fullPageScroll(forward: Bool, editor: VimTextEditor) {
+        scrollLines(by: max(1, editor.viewportLineCount() ?? 20), forward: forward, editor: editor)
+    }
+
+    private func scrollLines(by lines: Int, forward: Bool, editor: VimTextEditor) {
         let cursor = editor.selectedRange.location
         let target: Int
         if let visual = editor.visualLineLocation(from: cursor, lines: forward ? lines : -lines) {
@@ -1429,6 +1477,22 @@ public final class VimEngine {
             target = computeMotion(forward ? .down : .up, count: lines, text: editor.text, from: cursor)
         }
         editor.selectedRange = NSRange(location: target, length: 0)
+    }
+
+    /// Jump to line `n` (1-indexed). Used by `NG`, `Ngg`, and `:N<Enter>`.
+    private func gotoLine(_ n: Int, editor: VimTextEditor) {
+        let ns = editor.text as NSString
+        let length = ns.length
+        let targetLine = max(1, n)
+        var pos = 0
+        var currentLine = 1
+        while currentLine < targetLine && pos < length {
+            if ns.character(at: pos) == 0x0A {
+                currentLine += 1
+            }
+            pos += 1
+        }
+        editor.selectedRange = NSRange(location: min(pos, length), length: 0)
     }
 
     private func reverseFind(_ mode: PendingFind) -> PendingFind {
@@ -1490,6 +1554,10 @@ public final class VimEngine {
             setSubmode(.normal)
             onExit?()
         default:
+            // `:N` — jump to absolute line N.
+            if let n = Int(cmd), n > 0 {
+                gotoLine(n, editor: editor)
+            }
             setSubmode(.normal)
         }
     }
@@ -2193,6 +2261,26 @@ extension NSTextView: VimTextEditor {
         let clamped = max(0, targetY)
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: clamped))
         scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    public func visibleLineLocation(at position: VimViewportPosition) -> Int? {
+        guard let layoutManager,
+              let textContainer,
+              let scrollView = enclosingScrollView else { return nil }
+        let bounds = scrollView.contentView.bounds
+        let y: CGFloat
+        switch position {
+        case .top:    y = bounds.minY
+        case .middle: y = bounds.midY
+        case .bottom: y = bounds.maxY - 1
+        }
+        let containerY = y - textContainerOrigin.y
+        layoutManager.ensureLayout(for: textContainer)
+        guard layoutManager.numberOfGlyphs > 0 else { return 0 }
+        let point = NSPoint(x: 0, y: max(0, containerY))
+        let glyphIdx = layoutManager.glyphIndex(for: point, in: textContainer)
+        let charIdx = layoutManager.characterIndexForGlyph(at: glyphIdx)
+        return min(max(0, charIdx), (string as NSString).length)
     }
 }
 

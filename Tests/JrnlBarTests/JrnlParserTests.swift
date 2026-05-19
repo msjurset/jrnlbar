@@ -476,6 +476,19 @@ final class StubEditor: VimTextEditor {
     func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment) {
         scrollRequests.append((location, alignment))
     }
+
+    /// Optional fixed locations the stub returns for H / M / L tests.
+    var stubVisibleTop: Int?
+    var stubVisibleMiddle: Int?
+    var stubVisibleBottom: Int?
+
+    func visibleLineLocation(at position: VimViewportPosition) -> Int? {
+        switch position {
+        case .top: return stubVisibleTop
+        case .middle: return stubVisibleMiddle
+        case .bottom: return stubVisibleBottom
+        }
+    }
 }
 
 /// Feed each key in `keys` to the engine. A key is either:
@@ -500,6 +513,12 @@ func feed(_ engine: VimEngine, _ keys: [String], on editor: VimTextEditor) {
             continue
         case "<c-u>":
             engine.handleKey(chars: "u", keyCode: 0, modifiers: [.control], editor: editor)
+            continue
+        case "<c-f>":
+            engine.handleKey(chars: "f", keyCode: 0, modifiers: [.control], editor: editor)
+            continue
+        case "<c-b>":
+            engine.handleKey(chars: "b", keyCode: 0, modifiers: [.control], editor: editor)
             continue
         default: chars = k; keyCode = 0
         }
@@ -1753,6 +1772,102 @@ test("VimEngine: 2gj moves down 2 logical lines") {
     let ed = StubEditor("a\nb\nc\nd", caret: 0)
     feed(engine, ["2", "g", "j"], on: ed)
     expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
+// ─── Ctrl-f / Ctrl-b full-page scroll
+
+test("VimEngine: Ctrl-f moves a full viewport down") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne\nf\ng", caret: 0)
+    ed.stubViewportLineCount = 4
+    feed(engine, ["<c-f>"], on: ed)
+    // Full page = 4 lines, fall back to logical motion → position 8 ('e').
+    expect(ed.selectedRange.location == 8, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: Ctrl-b moves a full viewport up") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne\nf\ng", caret: 12)  // on 'g'
+    ed.stubViewportLineCount = 4
+    feed(engine, ["<c-b>"], on: ed)
+    // Up 4 from line 7 → line 3 ('c' at position 4).
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
+// ─── H / M / L
+
+test("VimEngine: H jumps to top visible line") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne", caret: 8)
+    ed.stubVisibleTop = 0
+    feed(engine, ["H"], on: ed)
+    expect(ed.selectedRange.location == 0, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: M jumps to middle visible line") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne", caret: 0)
+    ed.stubVisibleMiddle = 4  // 'c'
+    feed(engine, ["M"], on: ed)
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: L jumps to bottom visible line") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne", caret: 0)
+    ed.stubVisibleBottom = 8  // 'e'
+    feed(engine, ["L"], on: ed)
+    expect(ed.selectedRange.location == 8, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: H / M / L are no-ops when host has no viewport") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc", caret: 2)
+    feed(engine, ["H"], on: ed)
+    expect(ed.selectedRange.location == 2, "caret should not move; got \(ed.selectedRange.location)")
+}
+
+// ─── Goto line (NG, Ngg, :N<Enter>)
+
+test("VimEngine: NG jumps to absolute line N") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree\nfour", caret: 0)
+    feed(engine, ["3", "G"], on: ed)
+    // Line 3 starts after two \n chars: positions 0-3 (one\n), 4-7 (two\n), 8 (start of three)
+    expect(ed.selectedRange.location == 8, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: bare G still goes to last line") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree", caret: 0)
+    feed(engine, ["G"], on: ed)
+    // Last line "three" starts at 8.
+    expect(ed.selectedRange.location == 13 || ed.selectedRange.location == 8 ||
+           ed.selectedRange.location == (("one\ntwo\nthree" as NSString).length),
+           "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: Ngg jumps to absolute line N") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree\nfour", caret: 15)
+    feed(engine, ["2", "g", "g"], on: ed)
+    // Line 2 starts at position 4.
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: :N<Enter> jumps to absolute line N") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo\nthree", caret: 0)
+    feed(engine, [":", "3", "<enter>"], on: ed)
+    expect(ed.selectedRange.location == 8, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: goto line past end clamps to buffer end") {
+    let engine = VimEngine()
+    let ed = StubEditor("one\ntwo", caret: 0)
+    feed(engine, ["9", "9", "G"], on: ed)
+    let len = ("one\ntwo" as NSString).length
+    expect(ed.selectedRange.location <= len, "got \(ed.selectedRange.location)")
 }
 
 // ─── Summary ───

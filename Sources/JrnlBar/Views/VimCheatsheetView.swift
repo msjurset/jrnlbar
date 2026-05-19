@@ -15,8 +15,11 @@ struct VimCheatsheetView: View {
                     row("{ / }", "previous / next paragraph (blank line)")
                     row("%", "matching ( ) [ ] { } bracket")
                     row("gg / G", "top / bottom of buffer")
+                    row("NG / Ngg / :N", "jump to absolute line N")
                     row("Ctrl-d / Ctrl-u", "half-page down / up")
-                    row("zz / zt / zb", "center / top / bottom cursor line on screen")
+                    row("Ctrl-f / Ctrl-b", "full-page down / up")
+                    row("H / M / L", "top / middle / bottom visible line")
+                    row("zz / zt / zb", "scroll cursor line to center / top / bottom")
                     row("arrows", "same as h j k l")
                     row("Nx", "count prefix repeats: 5w, 3l, 2dd…")
                 }
