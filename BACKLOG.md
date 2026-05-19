@@ -52,12 +52,16 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 
 ## UX
 
-- [ ] **Preferences window** — replace `defaults write`-only settings
-      (`externalEditorBundleID`) with a proper UI, plus a
-      "Reveal templates folder" button.
+- [x] **Preferences window** — `externalEditorBundleID` field with
+      quick-pick buttons, "Reveal templates folder" button. Right-click
+      menu → Preferences… or `Cmd+,` from inside the panel.
 - [ ] **Hotkey rebind** — let users change `Shift+Cmd+J` via the
       Preferences window. Needs a custom hotkey recorder + dynamic
       Carbon registration.
+- [ ] **In-app template editor** — currently the Preferences window
+      only reveals the templates folder. A small pager + editor for
+      the four (or N) template files would round it out, but
+      templates are infrequently re-edited so this is low priority.
 - [ ] **Live markdown preview toggle** — Split or swap view showing the
       rendered markdown. The existing `MarkdownHighlighter` already knows
       the syntax; this is a rendering layer on top.

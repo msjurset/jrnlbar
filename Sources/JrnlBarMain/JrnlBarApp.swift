@@ -101,6 +101,7 @@ final class AppController {
 
     private var statusItem: NSStatusItem!
     private var panel: FloatingPanel!
+    private var preferencesWindow: NSWindow?
     private var hotkeyRef: EventHotKeyRef?
     private var globalClickMonitor: Any?
     private var escapeMonitor: Any?
@@ -209,6 +210,10 @@ final class AppController {
 
         menu.addItem(NSMenuItem.separator())
 
+        let prefsItem = NSMenuItem(title: "Preferences…", action: #selector(showPreferences), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
         let aboutItem = NSMenuItem(title: "About JrnlBar", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
@@ -231,6 +236,20 @@ final class AppController {
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(nil)
+    }
+
+    @objc private func showPreferences() {
+        if preferencesWindow == nil {
+            let hosting = NSHostingController(rootView: PreferencesView())
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "Preferences"
+            window.styleMask = [NSWindow.StyleMask.titled, .closable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            preferencesWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        preferencesWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func quit() {
