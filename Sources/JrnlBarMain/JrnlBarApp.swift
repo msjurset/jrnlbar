@@ -281,6 +281,14 @@ enum JrnlBarApp {
         UserDefaults.standard.set(true, forKey: "NSGrammarCheckingEnabled")
         UserDefaults.standard.set(true, forKey: "NSContinuousSpellCheckingEnabled")
 
+        // Capture the reason string from any uncaught NSException so the
+        // next crash log includes diagnostic info beyond the bare type.
+        // Written via NSLog so it lands in unified logging too.
+        NSSetUncaughtExceptionHandler { exception in
+            NSLog("JrnlBar uncaught NSException: name=\(exception.name.rawValue) reason=\(exception.reason ?? "<nil>") userInfo=\(exception.userInfo ?? [:])")
+            NSLog("JrnlBar callStackSymbols:\n\(exception.callStackSymbols.joined(separator: "\n"))")
+        }
+
         // Set up everything before the run loop starts
         AppController.shared.setup()
 
