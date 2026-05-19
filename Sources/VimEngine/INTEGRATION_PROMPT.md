@@ -61,6 +61,43 @@ Read these two files **first** to understand the surface area:
   `vimStateChanged`. Shows how a panel-level Esc monitor yields to vim
   while it's active, then takes Esc back on vim exit.
 
+## Centralize the integration — one shared component, not N copies
+
+**Before you touch a single text input**, decide where the vim-host
+integration code will live. It is **one** subclass / **one**
+representable / **one** Coordinator. Every text input in the app that
+wants vim mode uses that same component. Do not copy-paste the
+`keyDown` forwarder, the `drawInsertionPoint` block-cursor, or the
+`setSelectedRanges` override into multiple text-view subclasses.
+
+Concrete pattern:
+
+- **One** NSTextView subclass (call it `VimHostTextView`) that holds
+  `vimEngineProvider` / `currentModeProvider` closures and implements
+  every vim-related override (keyDown, drawInsertionPoint,
+  setSelectedRanges, the insertText override for `R` overstrike).
+- **One** NSViewRepresentable wrapper (call it `VimHostEditor`) that
+  binds the engine, text, mode, and pendingCursor in/out of SwiftUI.
+- **One** ContentView-side lifecycle helper (call it
+  `VimModeController` or similar) that owns `vimEngine: VimEngine?`,
+  exposes `activate()` / `exit()`, sets up `onExit`, `onSubmit`,
+  `onSubmodeChanged`, and broadcasts `vimStateChanged`.
+
+If the app has more than one input that needs vim (e.g. journal entry
+field AND a comment field), they each instantiate `VimHostEditor` with
+their own `@State` bindings — but the editor's *type* is shared. Same
+keyDown logic, same cursor renderer, same scroll fix. Adding a vim
+feature touches one file, not N.
+
+This avoids the most common failure mode in cross-component
+integrations: feature X works in editor A but is silently broken in
+editor B because someone forgot to copy-paste the latest fix.
+
+If the existing app already has duplicated text-view subclasses
+(common in larger codebases), the *first* task is to consolidate them
+to a single base class. Do that before adding vim — adding to two
+classes locks in the duplication.
+
 ## Integration steps
 
 1. **Add `VimEngine.swift` to the target.** Either drop it into your
@@ -97,10 +134,38 @@ Read these two files **first** to understand the surface area:
    `EntryEditorView.swift`. Handle the newline edge case (vim shows a
    normal-width block on empty lines).
 
-4. **Invalidate cursor area on caret moves AND mode flips.** Override
-   `setSelectedRanges(_:affinity:stillSelecting:)` to invalidate old/new
-   block rects. On vim→insert / insert→vim transitions, force a redraw of
-   the cursor cell — see `invalidateBlockCursorArea()` in the source.
+4. **Override `setSelectedRanges(_:affinity:stillSelecting:)`** — this
+   one override has two responsibilities:
+
+   **a. Scroll the caret into view.** VimEngine writes
+   `editor.selectedRange = ...` directly to move the caret. That
+   setter on `NSTextView` does **not** call `scrollRangeToVisible`
+   (AppKit's "keep caret visible" behavior is a side effect of
+   `insertText`, which vim's keystrokes bypass). Without this fix,
+   `j`/`k`/`G`/`gg`/`n` walk the caret off the bottom of the visible
+   area. After `super.setSelectedRanges`, when vim is active and the
+   change isn't a mid-drag selection:
+
+       if !stillSelecting,
+          let primary = (ranges.first as? NSValue)?.rangeValue {
+           scrollRangeToVisible(NSRange(location: primary.location, length: 0))
+       }
+
+   Zero-length range so visual-mode selections that span screens don't
+   scroll to the far end — the caret position is what matters. Gated
+   on vim being active so unrelated `setSelectedRange` calls
+   (find-in-page, accessibility tooling) keep AppKit's defaults.
+
+   **b. Invalidate the block-cursor cell.** Capture the OLD block
+   rect before `super`, then after, invalidate both the OLD and NEW
+   rects so AppKit repaints them (clears the previous block, draws
+   the new one). Only needed when `vim.submode != .insert`. On
+   vim→insert / insert→vim transitions in `keyDown`, also call
+   `invalidateBlockCursorArea()` so the cursor shape flips
+   immediately without needing a caret move.
+
+   See `setSelectedRanges` in `EntryEditorView.swift` for the
+   reference implementation that does both.
 
 5. **Mode badge UI.** A small button/pill in your toolbar or status area
    showing `engine.badge` (`VIM:N`, `VIM:I`, `:q`, `/term`). Click clears the
