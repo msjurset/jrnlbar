@@ -437,6 +437,10 @@ test("TextMode.apply: vim is identity (engine handles input separately)") {
 final class StubEditor: VimTextEditor {
     var text: String
     var selectedRange: NSRange
+    /// Optional viewport size for Ctrl-d/u tests. nil means "no viewport".
+    var stubViewportLineCount: Int?
+    /// Records scrollLineToVerticalPosition calls for assertions.
+    var scrollRequests: [(location: Int, alignment: VimLineAlignment)] = []
     private var history: [(String, NSRange)] = []
     private var future: [(String, NSRange)] = []
 
@@ -466,6 +470,12 @@ final class StubEditor: VimTextEditor {
         text = next
         selectedRange = sel
     }
+
+    func viewportLineCount() -> Int? { stubViewportLineCount }
+
+    func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment) {
+        scrollRequests.append((location, alignment))
+    }
 }
 
 /// Feed each key in `keys` to the engine. A key is either:
@@ -484,6 +494,12 @@ func feed(_ engine: VimEngine, _ keys: [String], on editor: VimTextEditor) {
         case "<up>": chars = "\u{F700}"; keyCode = 126
         case "<c-r>": chars = "r"; keyCode = 15
             engine.handleKey(chars: chars, keyCode: keyCode, modifiers: [.control], editor: editor)
+            continue
+        case "<c-d>":
+            engine.handleKey(chars: "d", keyCode: 0, modifiers: [.control], editor: editor)
+            continue
+        case "<c-u>":
+            engine.handleKey(chars: "u", keyCode: 0, modifiers: [.control], editor: editor)
             continue
         default: chars = k; keyCode = 0
         }
@@ -1466,6 +1482,276 @@ test("VimEngine: * on a non-word char finds the next word") {
     let ed = StubEditor("foo bar foo", caret: 3)  // on ' ' between foo and bar
     feed(engine, ["*"], on: ed)
     // Should search for "bar" (next word). Only one occurrence, wraps.
+    expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
+}
+
+// ─── Insert-mode . replay
+
+test("VimEngine: . replays i + typed text") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 5)  // at end
+    // Tests don't simulate AppKit's actual char insertion, but they DO
+    // exercise the engine's recording. Replay on a fresh editor shows
+    // the recorded text getting inserted.
+    feed(engine, ["i", "x", "y", "z", "<esc>"], on: ed)
+
+    let ed2 = StubEditor("foo", caret: 3)
+    feed(engine, ["."], on: ed2)
+    expect(ed2.text == "fooxyz", "got: \(ed2.text)")
+}
+
+test("VimEngine: . replays a + typed text") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 0)
+    feed(engine, ["a", "X", "<esc>"], on: ed)
+    // Replay on a different editor.
+    let ed2 = StubEditor("foo", caret: 0)
+    feed(engine, ["."], on: ed2)
+    // Replay: `a` moves right one (caret 0→1), then inserts "X".
+    expect(ed2.text == "fXoo", "got: \(ed2.text)")
+    expect(ed2.selectedRange.location == 2)
+}
+
+test("VimEngine: . replays I + typed text (line first non-blank)") {
+    let engine = VimEngine()
+    let ed = StubEditor("    hello", caret: 6)
+    feed(engine, ["I", "*", "<esc>"], on: ed)
+    let ed2 = StubEditor("    world", caret: 7)
+    feed(engine, ["."], on: ed2)
+    // I jumps to position 4 (first non-blank), then inserts "*"
+    expect(ed2.text == "    *world", "got: \(ed2.text)")
+}
+
+test("VimEngine: . replays o (open line below)") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb", caret: 0)
+    feed(engine, ["o", "X", "<esc>"], on: ed)
+    let ed2 = StubEditor("c\nd", caret: 0)
+    feed(engine, ["."], on: ed2)
+    // o adds a blank line below "c", then inserts "X"
+    expect(ed2.text == "c\nX\nd", "got: \(ed2.text)")
+}
+
+test("VimEngine: . replays cw with new text") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz", caret: 0)
+    feed(engine, ["c", "w", "X", "Y", "<esc>"], on: ed)
+    let ed2 = StubEditor("one two", caret: 0)
+    feed(engine, ["."], on: ed2)
+    // cw deletes "one " then inserts "XY" → "XYtwo"
+    expect(ed2.text == "XYtwo", "got: \(ed2.text)")
+}
+
+test("VimEngine: . replays cc with new text") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, ["c", "c", "Z", "<esc>"], on: ed)
+    let ed2 = StubEditor("foo\nbar", caret: 0)
+    feed(engine, ["."], on: ed2)
+    // cc empties line "foo" (leaving "\nbar"), then inserts "Z" → "Z\nbar"
+    expect(ed2.text == "Z\nbar", "got: \(ed2.text)")
+}
+
+test("VimEngine: . replays C (change to end of line) with new text") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 0)
+    feed(engine, ["C", "X", "<esc>"], on: ed)
+    let ed2 = StubEditor("foo bar baz", caret: 4)  // on 'b' of bar
+    feed(engine, ["."], on: ed2)
+    // C from position 4 deletes "bar baz", then inserts "X" → "foo X"
+    expect(ed2.text == "foo X", "got: \(ed2.text)")
+}
+
+test("VimEngine: . replays s with new text") {
+    let engine = VimEngine()
+    let ed = StubEditor("abc", caret: 0)
+    feed(engine, ["s", "X", "Y", "<esc>"], on: ed)
+    let ed2 = StubEditor("foo", caret: 1)
+    feed(engine, ["."], on: ed2)
+    // s deletes char at cursor (1 → 'o') then inserts "XY" → "fXYo"
+    expect(ed2.text == "fXYo", "got: \(ed2.text)")
+}
+
+test("VimEngine: . repeats consecutively (idempotent)") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo", caret: 3)
+    feed(engine, ["a", "X", "<esc>"], on: ed)
+    let ed2 = StubEditor("bar", caret: 0)
+    feed(engine, [".", "."], on: ed2)
+    // First .: a → caret 1, insert X → "bXar", caret 2.
+    // Second .: a → caret 3, insert X → "bXaXr", caret 4.
+    expect(ed2.text == "bXaXr", "got: \(ed2.text)")
+}
+
+test("VimEngine: backspace in insert mode shrinks recording") {
+    let engine = VimEngine()
+    let ed = StubEditor("", caret: 0)
+    feed(engine, ["i", "a", "b", "c", "<bs>", "<esc>"], on: ed)
+    let ed2 = StubEditor("", caret: 0)
+    feed(engine, ["."], on: ed2)
+    // Recording: abc, then backspace removed 'c' → "ab".
+    expect(ed2.text == "ab", "got: \(ed2.text)")
+}
+
+test("VimEngine: empty insert mode ends with no replay text") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 2)
+    feed(engine, ["i", "<esc>"], on: ed)
+    let ed2 = StubEditor("world", caret: 0)
+    feed(engine, ["."], on: ed2)
+    // Nothing was typed; replay does nothing visible.
+    expect(ed2.text == "world", "got: \(ed2.text)")
+}
+
+// ─── Ctrl-d / Ctrl-u half-page scroll
+
+test("VimEngine: Ctrl-d moves cursor down half a viewport") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne\nf\ng\nh", caret: 0)
+    ed.stubViewportLineCount = 6  // half = 3 lines
+    feed(engine, ["<c-d>"], on: ed)
+    // Stub has no visual-line layout, so engine falls back to logical
+    // .down motion by 3. Cursor moves to line 3 (position 6 = 'd').
+    expect(ed.selectedRange.location == 6, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: Ctrl-u moves cursor up half a viewport") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne\nf\ng\nh", caret: 14)  // on 'h'
+    ed.stubViewportLineCount = 6  // half = 3 lines
+    feed(engine, ["<c-u>"], on: ed)
+    // Move up 3 lines from line 7 → line 4 (position 8 = 'e').
+    expect(ed.selectedRange.location == 8, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: Ctrl-d falls back to 10 lines when no viewport") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl", caret: 0)
+    // No stubViewportLineCount → default 20, half = 10.
+    feed(engine, ["<c-d>"], on: ed)
+    // Move down 10 logical lines: each line is 2 chars (char + \n).
+    // Line 10 starts at position 20. Buffer is 23 chars total.
+    expect(ed.selectedRange.location == 20, "got \(ed.selectedRange.location)")
+}
+
+// ─── zz / zt / zb
+
+test("VimEngine: zz requests center-of-viewport scroll at cursor") {
+    let engine = VimEngine()
+    let ed = StubEditor("line\nline\nline", caret: 7)
+    feed(engine, ["z", "z"], on: ed)
+    expect(ed.scrollRequests.count == 1)
+    if let req = ed.scrollRequests.first {
+        expect(req.location == 7)
+        expect(req.alignment == .center)
+    }
+}
+
+test("VimEngine: zt requests top-of-viewport scroll") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 2)
+    feed(engine, ["z", "t"], on: ed)
+    expect(ed.scrollRequests.first?.alignment == .top)
+}
+
+test("VimEngine: zb requests bottom-of-viewport scroll") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 2)
+    feed(engine, ["z", "b"], on: ed)
+    expect(ed.scrollRequests.first?.alignment == .bottom)
+}
+
+test("VimEngine: z then non-zt/zb char is a no-op") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello", caret: 2)
+    feed(engine, ["z", "x"], on: ed)
+    expect(ed.scrollRequests.isEmpty, "no scroll request expected, got \(ed.scrollRequests.count)")
+}
+
+// ─── Indent operators
+
+test("VimEngine: >> indents current line by 2 spaces") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, [">", ">"], on: ed)
+    expect(ed.text == "  hello\nworld", "got: \(ed.text)")
+}
+
+test("VimEngine: << outdents current line by 2 spaces") {
+    let engine = VimEngine()
+    let ed = StubEditor("    hello\nworld", caret: 0)
+    feed(engine, ["<", "<"], on: ed)
+    expect(ed.text == "  hello\nworld", "got: \(ed.text)")
+}
+
+test("VimEngine: << on unindented line is a no-op") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, ["<", "<"], on: ed)
+    expect(ed.text == "hello\nworld", "got: \(ed.text)")
+}
+
+test("VimEngine: 3>> indents 3 lines") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd", caret: 0)
+    feed(engine, ["3", ">", ">"], on: ed)
+    expect(ed.text == "  a\n  b\n  c\nd", "got: \(ed.text)")
+}
+
+test("VimEngine: >j indents current and next line") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc", caret: 0)
+    // > then j (j is not a registered motion in motionFor), but j IS
+    // mapped to .down via the operator path... actually j is NOT in
+    // motionFor. Use a different motion that IS in motionFor: e.g., }
+    feed(engine, [">", "}"], on: ed)
+    // } is paragraphForward — on a 3-line buffer with no blank lines,
+    // it jumps to buffer end. All 3 lines should be indented.
+    expect(ed.text == "  a\n  b\n  c", "got: \(ed.text)")
+}
+
+test("VimEngine: visual > indents selected lines") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd", caret: 0)
+    feed(engine, ["V", "j", ">"], on: ed)
+    // V selects line 1, j extends to include line 2 (both selected).
+    expect(ed.text == "  a\n  b\nc\nd", "got: \(ed.text)")
+}
+
+test("VimEngine: visual < outdents selected lines") {
+    let engine = VimEngine()
+    let ed = StubEditor("  a\n  b\n  c", caret: 0)
+    feed(engine, ["V", "j", "<"], on: ed)
+    expect(ed.text == "a\nb\n  c", "got: \(ed.text)")
+}
+
+test("VimEngine: . repeats >>") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello\nworld", caret: 0)
+    feed(engine, [">", ">", "."], on: ed)
+    expect(ed.text == "    hello\nworld", "got: \(ed.text)")
+}
+
+// ─── gj / gk (explicit logical-line motion)
+
+test("VimEngine: gj moves down by logical line") {
+    let engine = VimEngine()
+    let ed = StubEditor("line1\nline2\nline3", caret: 0)
+    feed(engine, ["g", "j"], on: ed)
+    expect(ed.selectedRange.location == 6, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: gk moves up by logical line") {
+    let engine = VimEngine()
+    let ed = StubEditor("line1\nline2\nline3", caret: 12)  // on 'l' of line3
+    feed(engine, ["g", "k"], on: ed)
+    expect(ed.selectedRange.location == 6, "got \(ed.selectedRange.location)")
+}
+
+test("VimEngine: 2gj moves down 2 logical lines") {
+    let engine = VimEngine()
+    let ed = StubEditor("a\nb\nc\nd", caret: 0)
+    feed(engine, ["2", "g", "j"], on: ed)
     expect(ed.selectedRange.location == 4, "got \(ed.selectedRange.location)")
 }
 

@@ -6,6 +6,7 @@ struct VimCheatsheetView: View {
             VStack(alignment: .leading, spacing: 14) {
                 section("Movement") {
                     row("h j k l", "left / down / up / right (visual lines)")
+                    row("gj / gk", "down / up by LOGICAL line (true \\n)")
                     row("w / b", "start of next / previous word")
                     row("e / ge", "end of current / previous word")
                     row("W B E", "WORD variants (whitespace-only separators)")
@@ -14,6 +15,8 @@ struct VimCheatsheetView: View {
                     row("{ / }", "previous / next paragraph (blank line)")
                     row("%", "matching ( ) [ ] { } bracket")
                     row("gg / G", "top / bottom of buffer")
+                    row("Ctrl-d / Ctrl-u", "half-page down / up")
+                    row("zz / zt / zb", "center / top / bottom cursor line on screen")
                     row("arrows", "same as h j k l")
                     row("Nx", "count prefix repeats: 5w, 3l, 2dd…")
                 }
@@ -72,7 +75,13 @@ struct VimCheatsheetView: View {
                     row("; / ,", "repeat last find / reverse")
                 }
                 section("Repeat") {
-                    row(".", "repeat last text-changing command")
+                    row(".", "repeat last text-changing command (incl. inserted text)")
+                }
+                section("Indent / outdent") {
+                    row(">> / <<", "indent / outdent current line by 2 spaces")
+                    row("N>> / N<<", "operate on N lines")
+                    row(">{motion} / <{motion}", "indent / outdent over motion")
+                    row("Visual > / <", "indent / outdent selected lines")
                 }
                 section("Text objects (with d / c / y / gU / gu / g~)") {
                     row("iw / aw", "inner / around word")

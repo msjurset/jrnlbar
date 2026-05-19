@@ -208,12 +208,13 @@ Smoke test after integration:
 
 ## Don't add features
 
-The engine is feature-complete enough (~250 unit tests in the source repo).
+The engine is feature-complete enough (~280 unit tests in the source repo).
 The cheatsheet view lists every supported command. If something feels
 missing, check that first — it's probably already there. Deliberate
 omissions are documented in `Sources/VimEngine/README.md` under "Deliberate
-limitations" (insert-mode `.` replay, named registers, macros, sentence
-motions, `:%s///`, indent operators). Don't add these without asking me.
+limitations" (`.` replay of `R` overstrike sessions, named registers,
+macros, sentence motions, `:%s///`, automatic visual marks). Don't add
+these without asking me.
 
 ## Don't change behavior
 

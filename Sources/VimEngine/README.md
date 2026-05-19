@@ -75,8 +75,10 @@ UI.
 
 ## Supported commands (highlights)
 
-**Movement**: `h j k l`, `w b e`, `ge`, `W B E`, `0 ^ $`, `gg G`,
-`{ }`, `%`, `f<x> F<x> t<x> T<x>`, `; ,`, arrow keys.
+**Movement**: `h j k l` (visual lines), `gj gk` (logical lines),
+`w b e`, `ge`, `W B E`, `0 ^ $`, `gg G`, `{ }`, `%`, `f<x> F<x> t<x>
+T<x>`, `; ,`, `Ctrl-d Ctrl-u` (half-page), `zz zt zb` (scroll cursor
+to center / top / bottom), arrow keys.
 
 **Insert mode**: `i a I A o O s` enter; `Esc` returns.
 
@@ -86,17 +88,21 @@ i\` a\` i( a( i[ a[ i{ a{`. Counts as prefix.
 
 **Replace**: `r<x>` (one char), `Nr<x>`, `R` (overstrike mode).
 
+**Indent**: `>>` / `<<` indent / outdent current line. `>{motion}` /
+`<{motion}` over a motion. Visual `>` / `<` on a selection. Indent
+width comes from `engine.indentString` (default 2 spaces).
+
 **Case**: `~`, `gU{motion}`, `gu{motion}`, `g~{motion}`, `gUU guu g~~`.
 In visual: `U u ~`.
 
-**Search**: `/<term>` `?<term>` `n N`.
+**Search**: `/<term>` `?<term>` `n N`, `*` `#` (word under cursor).
 
 **Marks**: `m<a-z>` set, `'<a-z>` jump to line, `` `<a-z>`` jump exact.
 
-**Repeat**: `.` replays the last text-mutating command (insert-mode
-content is not yet replayed).
+**Repeat**: `.` replays the last text-mutating command, including
+characters typed in insert mode after `i/a/I/A/o/O/s/c{motion}/cc/C`.
 
-**Visual**: `v V`, motions extend selection, `d y c ~ U u` operate,
+**Visual**: `v V`, motions extend selection, `d y c ~ U u > <` operate,
 `Esc` cancels, `gv` re-enters last selection.
 
 **Undo / redo**: `u`, `Ctrl-r` (delegated to `UndoManager`).
@@ -104,15 +110,32 @@ content is not yet replayed).
 **Command line**: `:q :vim :w :wq`. `:w` calls `onSubmit`; `:q` calls
 `onExit`.
 
+## Viewport-aware commands
+
+`Ctrl-d` / `Ctrl-u` need a viewport line count. `zz` / `zt` / `zb`
+need a way to scroll a specific line into a vertical position. Both
+go through optional `VimTextEditor` methods with no-op defaults:
+
+```swift
+func viewportLineCount() -> Int?
+func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment)
+```
+
+NSTextView's built-in conformance implements both via
+`enclosingScrollView`. Stubs (and editors without a scroll view) get
+the defaults — Ctrl-d falls back to ~10 logical lines; zz/zt/zb
+become silent no-ops.
+
 ## Deliberate limitations
 
-- `.` replay does not record characters typed in insert mode.
+- `.` replay does not record `R` overstrike sessions or text typed
+  after entering insert via visual `c` (only via i/a/I/A/o/O/s and
+  c{motion}/cc/C).
 - No named registers (single unnamed register only).
 - No macros (`q...q`, `@reg`).
 - No sentence motions (`(` `)`).
 - No `:%s/foo/bar/g`.
-- No `gj`/`gk` (bare `j`/`k` already moves by visual lines).
-- No automatic visual marks (`'<`/`'>`).
+- No automatic visual marks (`'<` / `'>`).
 
 These are deliberate trade-offs to keep the file small. PRs welcome in
 the host project.

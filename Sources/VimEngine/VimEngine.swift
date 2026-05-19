@@ -18,10 +18,24 @@ public protocol VimTextEditor: AnyObject {
     /// (e.g. unit-test stubs without a layout manager) — callers should
     /// fall back to logical-line motion.
     func visualLineLocation(from: Int, lines: Int) -> Int?
+    /// Number of fully-visible visual lines in the editor's viewport,
+    /// or nil when no viewport exists (test stubs). Used by Ctrl-d /
+    /// Ctrl-u to compute half-page distance.
+    func viewportLineCount() -> Int?
+    /// Scroll the editor so that the line containing the given char
+    /// offset sits at the requested vertical alignment in the viewport.
+    /// No-op for editors without a viewport.
+    func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment)
+}
+
+public enum VimLineAlignment {
+    case top, center, bottom
 }
 
 extension VimTextEditor {
     public func visualLineLocation(from: Int, lines: Int) -> Int? { nil }
+    public func viewportLineCount() -> Int? { nil }
+    public func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment) {}
 }
 
 /// Subset of vim sufficient for "fast keyboard edits to a short
@@ -47,6 +61,7 @@ public final class VimEngine {
     private var pendingOperatorCount: Int = 1
     private var pendingG: Bool = false
     private var pendingGCount: Int = 1
+    private var pendingZ: Bool = false
     private var pendingReplace: Bool = false
     private var pendingReplaceCount: Int = 1
     /// nil = not collecting a text object. true = around (a<obj>), false = inner (i<obj>).
@@ -70,6 +85,16 @@ public final class VimEngine {
     // `.` repeat: closure recording the last text-mutating command,
     // replayed in the current editor when `.` is pressed.
     private var lastChange: ((VimTextEditor) -> Void)?
+    // Insert-mode recording for `.` replay. Captures characters typed
+    // between an insert-entering command (i/a/I/A/o/O/s/c/C) and Esc.
+    private var isRecordingInsert: Bool = false
+    private var recordingInsertText: String = ""
+    private var lastInsertEntry: InsertEntry?
+    private var pendingInsertDeletionReplay: ((VimTextEditor) -> Void)?
+
+    private enum InsertEntry {
+        case i, a, capI, capA, o, capO
+    }
     // Search state for `/`, `?`, `n`, `N`. `searchForward` is the
     // direction the most recent search was initiated in; n repeats
     // it and N inverts.
@@ -87,7 +112,14 @@ public final class VimEngine {
         case uppercase
         case lowercase
         case togglecase
+        case indent
+        case outdent
     }
+
+    /// Indent unit used by `>>`, `<<`, `>{motion}`, `<{motion}` and the
+    /// visual-mode `>` / `<` keys. Default is two spaces. Hosts can
+    /// override before activating vim mode to match their indent style.
+    public var indentString: String = "  "
 
     /// Pending "next char" find mode set by f/F/t/T.
     public enum PendingFind: Hashable {
@@ -153,6 +185,16 @@ public final class VimEngine {
         if modifiers.contains(.control), chars == "r" {
             editor.vimRedo()
             resetTransient()
+            return true
+        }
+
+        // Ctrl-d / Ctrl-u = half-page scroll down/up.
+        if modifiers.contains(.control), chars == "d" {
+            halfPageScroll(forward: true, editor: editor)
+            return true
+        }
+        if modifiers.contains(.control), chars == "u" {
+            halfPageScroll(forward: false, editor: editor)
             return true
         }
 
@@ -247,6 +289,18 @@ public final class VimEngine {
             return true
         }
 
+        if pendingZ {
+            pendingZ = false
+            let pos = editor.selectedRange.location
+            switch c {
+            case "z": editor.scrollLineToVerticalPosition(location: pos, alignment: .center)
+            case "t": editor.scrollLineToVerticalPosition(location: pos, alignment: .top)
+            case "b": editor.scrollLineToVerticalPosition(location: pos, alignment: .bottom)
+            default: break
+            }
+            return true
+        }
+
         if pendingG {
             pendingG = false
             let gn = pendingGCount
@@ -254,6 +308,14 @@ public final class VimEngine {
             switch c {
             case "g": applyMotion(.bufferStart, count: 1, editor: editor)
             case "e": applyMotion(.previousWordEnd, count: 1, editor: editor)
+            case "j":
+                // Explicit logical-line down (bare `j` already moves
+                // by visual lines).
+                let target = computeMotion(.down, count: gn, text: editor.text, from: editor.selectedRange.location)
+                editor.selectedRange = NSRange(location: target, length: 0)
+            case "k":
+                let target = computeMotion(.up, count: gn, text: editor.text, from: editor.selectedRange.location)
+                editor.selectedRange = NSRange(location: target, length: 0)
             case "U":
                 pendingOperator = .uppercase
                 pendingOperatorCount = gn
@@ -304,21 +366,27 @@ public final class VimEngine {
             pendingG = true
             pendingGCount = n
         case "i":
+            startInsertRecording(.i)
             setSubmode(.insert)
         case "a":
             applyMotion(.right, count: 1, editor: editor)
+            startInsertRecording(.a)
             setSubmode(.insert)
         case "I":
             applyMotion(.lineFirstNonBlank, count: 1, editor: editor)
+            startInsertRecording(.capI)
             setSubmode(.insert)
         case "A":
             applyMotion(.lineEnd, count: 1, editor: editor)
+            startInsertRecording(.capA)
             setSubmode(.insert)
         case "o":
             openLine(below: true, editor: editor)
+            startInsertRecording(.o)
             setSubmode(.insert)
         case "O":
             openLine(below: false, editor: editor)
+            startInsertRecording(.capO)
             setSubmode(.insert)
         case "x":
             deleteCharAtCaret(count: n, editor: editor)
@@ -350,10 +418,11 @@ public final class VimEngine {
             pendingOperator = .change
             pendingOperatorCount = n
         case "C":
-            deleteOverMotion(.lineEnd, count: n, editor: editor)
+            let cn = n
+            deleteOverMotion(.lineEnd, count: cn, editor: editor)
             setSubmode(.insert)
-            recordChange { [weak self] ed in
-                self?.deleteOverMotion(.lineEnd, count: n, editor: ed)
+            startInsertRecordingWithDeletionReplay { [weak self] ed in
+                self?.deleteOverMotion(.lineEnd, count: cn, editor: ed)
             }
         case "D":
             deleteOverMotion(.lineEnd, count: n, editor: editor)
@@ -361,10 +430,11 @@ public final class VimEngine {
                 self?.deleteOverMotion(.lineEnd, count: n, editor: ed)
             }
         case "s":
-            deleteCharAtCaret(count: n, editor: editor)
+            let sn = n
+            deleteCharAtCaret(count: sn, editor: editor)
             setSubmode(.insert)
-            recordChange { [weak self] ed in
-                self?.deleteCharAtCaret(count: n, editor: ed)
+            startInsertRecordingWithDeletionReplay { [weak self] ed in
+                self?.deleteCharAtCaret(count: sn, editor: ed)
             }
         case "r":
             pendingReplace = true
@@ -425,6 +495,14 @@ public final class VimEngine {
             }
         case "m":
             pendingMarkSet = true
+        case "z":
+            pendingZ = true
+        case ">":
+            pendingOperator = .indent
+            pendingOperatorCount = n
+        case "<":
+            pendingOperator = .outdent
+            pendingOperatorCount = n
         case "'":
             pendingMarkJumpExact = false
         case "`":
@@ -500,13 +578,17 @@ public final class VimEngine {
             }
         case .change:
             if motionChar == "c" {
-                changeLines(count: count, editor: editor)
-                recordChange { [weak self] ed in self?.changeLines(count: count, editor: ed) }
+                let cc = count
+                changeLines(count: cc, editor: editor)
+                startInsertRecordingWithDeletionReplay { [weak self] ed in
+                    self?.changeLineContents(count: cc, editor: ed)
+                }
             } else if let motion = motionFor(motionChar) {
-                deleteOverMotion(motion, count: count, editor: editor)
+                let cc = count
+                deleteOverMotion(motion, count: cc, editor: editor)
                 setSubmode(.insert)
-                recordChange { [weak self] ed in
-                    self?.deleteOverMotion(motion, count: count, editor: ed)
+                startInsertRecordingWithDeletionReplay { [weak self] ed in
+                    self?.deleteOverMotion(motion, count: cc, editor: ed)
                 }
             }
         case .uppercase:
@@ -515,8 +597,26 @@ public final class VimEngine {
             applyCaseOperator(.lowercase, doubledChar: "u", motionChar: motionChar, count: count, editor: editor)
         case .togglecase:
             applyCaseOperator(.togglecase, doubledChar: "~", motionChar: motionChar, count: count, editor: editor)
+        case .indent:
+            applyIndentOperator(direction: 1, doubledChar: ">", motionChar: motionChar, count: count, editor: editor)
+        case .outdent:
+            applyIndentOperator(direction: -1, doubledChar: "<", motionChar: motionChar, count: count, editor: editor)
         }
         return false
+    }
+
+    private func applyIndentOperator(direction: Int, doubledChar: Character, motionChar: Character, count: Int, editor: VimTextEditor) {
+        if motionChar == doubledChar {
+            indentLines(direction: direction, count: count, editor: editor)
+            recordChange { [weak self] ed in
+                self?.indentLines(direction: direction, count: count, editor: ed)
+            }
+        } else if let motion = motionFor(motionChar) {
+            indentOverMotion(direction: direction, motion: motion, count: count, editor: editor)
+            recordChange { [weak self] ed in
+                self?.indentOverMotion(direction: direction, motion: motion, count: count, editor: ed)
+            }
+        }
     }
 
     private func applyCaseOperator(_ op: PendingOperator, doubledChar: Character, motionChar: Character, count: Int, editor: VimTextEditor) {
@@ -606,6 +706,13 @@ public final class VimEngine {
             }
             editor.replace(in: range, with: swapped)
             editor.selectedRange = NSRange(location: range.location, length: 0)
+        case .indent, .outdent:
+            // Indent/outdent are linewise — expand the range to cover the
+            // start of every line it touches and apply line by line.
+            let direction = (op == .indent) ? 1 : -1
+            let firstLineStart = lineStart(in: ns, of: range.location)
+            let lastLineStart = lineStart(in: ns, of: range.location + max(0, range.length - 1))
+            indentRange(direction: direction, fromLineStart: firstLineStart, toLineStart: lastLineStart, editor: editor)
         }
     }
 
@@ -773,10 +880,85 @@ public final class VimEngine {
 
     private func handleInsert(chars: String?, keyCode: UInt16, modifiers: KeyModifiers, editor: VimTextEditor) -> Bool {
         if keyCode == 53 {  // Escape
+            finalizeInsertRecording()
             setSubmode(.normal)
             return true
         }
+        // Record the typed character for `.` replay. handleInsert
+        // returns false for non-Esc keys, so AppKit still inserts the
+        // text — we just observe the keystroke.
+        if isRecordingInsert {
+            recordInsertKey(chars: chars, keyCode: keyCode, modifiers: modifiers)
+        }
         return false
+    }
+
+    private func startInsertRecording(_ entry: InsertEntry) {
+        isRecordingInsert = true
+        recordingInsertText = ""
+        lastInsertEntry = entry
+        pendingInsertDeletionReplay = nil
+    }
+
+    private func startInsertRecordingWithDeletionReplay(_ replay: @escaping (VimTextEditor) -> Void) {
+        isRecordingInsert = true
+        recordingInsertText = ""
+        lastInsertEntry = nil
+        pendingInsertDeletionReplay = replay
+    }
+
+    private func recordInsertKey(chars: String?, keyCode: UInt16, modifiers: KeyModifiers) {
+        switch keyCode {
+        case 36:  // Enter
+            recordingInsertText.append("\n")
+        case 48:  // Tab
+            recordingInsertText.append("\t")
+        case 51:  // Backspace
+            if !recordingInsertText.isEmpty { recordingInsertText.removeLast() }
+        default:
+            // Skip modifier-only chord events and special keys.
+            if modifiers.contains(.command) || modifiers.contains(.control) { return }
+            guard let chars, chars.count == 1, let c = chars.first else { return }
+            // Printable chars only (filter out arrow-key Unicode private-use codes etc.).
+            guard c.isLetter || c.isNumber || c.isPunctuation || c.isSymbol || c == " " else { return }
+            recordingInsertText.append(c)
+        }
+    }
+
+    private func finalizeInsertRecording() {
+        guard isRecordingInsert else { return }
+        let text = recordingInsertText
+        let entry = lastInsertEntry
+        let deletionReplay = pendingInsertDeletionReplay
+        isRecordingInsert = false
+        recordingInsertText = ""
+        lastInsertEntry = nil
+        pendingInsertDeletionReplay = nil
+
+        recordChange { [weak self] ed in
+            guard let self else { return }
+            if let deletionReplay {
+                deletionReplay(ed)
+            } else if let entry {
+                self.replayInsertEntry(entry, editor: ed)
+            }
+            if !text.isEmpty {
+                let cursor = ed.selectedRange.location
+                ed.replace(in: NSRange(location: cursor, length: 0), with: text)
+                ed.selectedRange = NSRange(location: cursor + (text as NSString).length, length: 0)
+            }
+        }
+    }
+
+    private func replayInsertEntry(_ entry: InsertEntry, editor: VimTextEditor) {
+        switch entry {
+        case .i: break
+        case .a: applyMotion(.right, count: 1, editor: editor)
+        case .capI: applyMotion(.lineFirstNonBlank, count: 1, editor: editor)
+        case .capA: applyMotion(.lineEnd, count: 1, editor: editor)
+        case .o: openLine(below: true, editor: editor)
+        case .capO: openLine(below: false, editor: editor)
+        }
     }
 
     // MARK: - Replace (R) mode
@@ -891,6 +1073,14 @@ public final class VimEngine {
             recordLastVisual()
             collapseVisual(editor)
             setSubmode(.normal)
+        case ">":
+            indentSelection(direction: 1, editor: editor)
+            recordLastVisual()
+            setSubmode(.normal)
+        case "<":
+            indentSelection(direction: -1, editor: editor)
+            recordLastVisual()
+            setSubmode(.normal)
         case "v":
             // Toggle out of charwise visual.
             if submode == .visual {
@@ -989,6 +1179,15 @@ public final class VimEngine {
         let sel = editor.selectedRange
         guard sel.length > 0 else { return }
         applyOperatorToRange(op, range: sel, editor: editor)
+    }
+
+    private func indentSelection(direction: Int, editor: VimTextEditor) {
+        let sel = editor.selectedRange
+        guard sel.length > 0 else { return }
+        let ns = editor.text as NSString
+        let firstLineStart = lineStart(in: ns, of: sel.location)
+        let lastLineStart = lineStart(in: ns, of: sel.location + max(0, sel.length - 1))
+        indentRange(direction: direction, fromLineStart: firstLineStart, toLineStart: lastLineStart, editor: editor)
     }
 
     /// Remember the current visual selection so `gv` can re-enter it.
@@ -1156,6 +1355,82 @@ public final class VimEngine {
         return ns.substring(with: NSRange(location: start, length: end - start))
     }
 
+    // MARK: - Indent / outdent
+
+    /// `>>` / `<<` — indent/outdent N lines starting at the current line.
+    private func indentLines(direction: Int, count: Int, editor: VimTextEditor) {
+        let ns = editor.text as NSString
+        let cursor = editor.selectedRange.location
+        let firstLineStart = lineStart(in: ns, of: cursor)
+        var lastLineStart = firstLineStart
+        for _ in 1..<count {
+            let le = lineEnd(in: editor.text as NSString, of: lastLineStart)
+            if le >= (editor.text as NSString).length { break }
+            lastLineStart = le + 1
+        }
+        indentRange(direction: direction, fromLineStart: firstLineStart, toLineStart: lastLineStart, editor: editor)
+    }
+
+    /// `>{motion}` / `<{motion}` — indent/outdent every line spanned by
+    /// the motion.
+    private func indentOverMotion(direction: Int, motion: Motion, count: Int, editor: VimTextEditor) {
+        let from = editor.selectedRange.location
+        let to = computeMotion(motion, count: count, text: editor.text, from: from)
+        let ns = editor.text as NSString
+        let firstLineStart = lineStart(in: ns, of: min(from, to))
+        let lastLineStart = lineStart(in: ns, of: max(from, to))
+        indentRange(direction: direction, fromLineStart: firstLineStart, toLineStart: lastLineStart, editor: editor)
+    }
+
+    private func indentRange(direction: Int, fromLineStart: Int, toLineStart: Int, editor: VimTextEditor) {
+        var lineStarts: [Int] = []
+        var current = fromLineStart
+        while current <= toLineStart {
+            lineStarts.append(current)
+            let ns = editor.text as NSString
+            let le = lineEnd(in: ns, of: current)
+            if le >= ns.length { break }
+            current = le + 1
+        }
+        // Process from last to first so earlier indices don't shift.
+        for ls in lineStarts.reversed() {
+            if direction > 0 {
+                editor.replace(in: NSRange(location: ls, length: 0), with: indentString)
+            } else {
+                let ns = editor.text as NSString
+                let le = lineEnd(in: ns, of: ls)
+                let maxRemove = (indentString as NSString).length
+                var remove = 0
+                while remove < maxRemove && ls + remove < le {
+                    let c = ns.character(at: ls + remove)
+                    if c == 0x20 || c == 0x09 { remove += 1 } else { break }
+                }
+                if remove > 0 {
+                    editor.replace(in: NSRange(location: ls, length: remove), with: "")
+                }
+            }
+        }
+        // Place cursor at the first non-blank of the first affected line.
+        let ns = editor.text as NSString
+        editor.selectedRange = NSRange(location: lineFirstNonBlank(in: ns, of: fromLineStart), length: 0)
+    }
+
+    /// Ctrl-d / Ctrl-u — move caret by half a viewport's worth of visual
+    /// lines. Scroll-to-visible (handled by the host's
+    /// setSelectedRanges override) pulls the viewport along.
+    private func halfPageScroll(forward: Bool, editor: VimTextEditor) {
+        let viewport = editor.viewportLineCount() ?? 20
+        let lines = max(1, viewport / 2)
+        let cursor = editor.selectedRange.location
+        let target: Int
+        if let visual = editor.visualLineLocation(from: cursor, lines: forward ? lines : -lines) {
+            target = visual
+        } else {
+            target = computeMotion(forward ? .down : .up, count: lines, text: editor.text, from: cursor)
+        }
+        editor.selectedRange = NSRange(location: target, length: 0)
+    }
+
     private func reverseFind(_ mode: PendingFind) -> PendingFind {
         switch mode {
         case .findForward: return .findBackward
@@ -1233,6 +1508,7 @@ public final class VimEngine {
         pendingOperatorCount = 1
         pendingG = false
         pendingGCount = 1
+        pendingZ = false
         pendingReplace = false
         pendingReplaceCount = 1
         pendingFind = nil
@@ -1437,9 +1713,14 @@ public final class VimEngine {
     }
 
     private func changeLines(count: Int, editor: VimTextEditor) {
-        // `cc` empties the current line(s) but leaves the line itself
-        // behind so insert mode lands on a (now-blank) line. The yank
-        // register receives the deleted content, linewise.
+        changeLineContents(count: count, editor: editor)
+        setSubmode(.insert)
+    }
+
+    /// The deletion half of `cc` — separated from `changeLines` so the
+    /// `.` replay path can re-run the deletion without spuriously
+    /// re-entering insert mode.
+    private func changeLineContents(count: Int, editor: VimTextEditor) {
         let nsText = editor.text as NSString
         let cursor = editor.selectedRange.location
         let start = lineStart(in: nsText, of: cursor)
@@ -1454,7 +1735,6 @@ public final class VimEngine {
         registerIsLine = true
         editor.replace(in: NSRange(location: start, length: end - start), with: "")
         editor.selectedRange = NSRange(location: start, length: 0)
-        setSubmode(.insert)
     }
 
     private func yankLines(count: Int, editor: VimTextEditor) {
@@ -1876,6 +2156,43 @@ extension NSTextView: VimTextEditor {
         let targetGlyph = layoutManager.glyphIndex(for: targetPoint, in: textContainer)
         let targetChar = layoutManager.characterIndexForGlyph(at: targetGlyph)
         return min(max(0, targetChar), length)
+    }
+
+    public func viewportLineCount() -> Int? {
+        guard let scrollView = enclosingScrollView else { return nil }
+        let viewportHeight = scrollView.contentView.bounds.height
+        let lineHeight = font?.boundingRectForFont.height ?? 16
+        guard lineHeight > 0 else { return nil }
+        return max(1, Int(viewportHeight / lineHeight))
+    }
+
+    public func scrollLineToVerticalPosition(location: Int, alignment: VimLineAlignment) {
+        guard let layoutManager,
+              let textContainer,
+              let scrollView = enclosingScrollView else { return }
+        let ns = string as NSString
+        guard ns.length > 0 else { return }
+        let safeLocation = min(max(0, location), ns.length - 1)
+
+        layoutManager.ensureLayout(for: textContainer)
+        let totalGlyphs = layoutManager.numberOfGlyphs
+        guard totalGlyphs > 0 else { return }
+        let glyphIdx = min(layoutManager.glyphIndexForCharacter(at: safeLocation), totalGlyphs - 1)
+
+        let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+        let lineY = lineRect.minY + textContainerOrigin.y
+        let lineHeight = lineRect.height
+        let visibleHeight = scrollView.contentView.bounds.height
+
+        let targetY: CGFloat
+        switch alignment {
+        case .top: targetY = lineY
+        case .center: targetY = lineY + lineHeight / 2 - visibleHeight / 2
+        case .bottom: targetY = lineY + lineHeight - visibleHeight
+        }
+        let clamped = max(0, targetY)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: clamped))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 }
 
