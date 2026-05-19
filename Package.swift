@@ -14,7 +14,7 @@ let package = Package(
         // Bumping to 2.0 will require the test target to acquire main
         // actor isolation; do that as a deliberate migration, not a
         // silent point-version bump.
-        .package(url: "https://github.com/msjurset/swift-vim-engine.git", from: "1.0.0")
+        .package(url: "https://github.com/msjurset/swift-vim-engine.git", from: "2.0.0")
     ],
     targets: [
         .target(

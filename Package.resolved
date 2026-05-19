@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/msjurset/swift-vim-engine.git",
       "state" : {
-        "revision" : "249a277d66e158bb2d03eb4e6c5bea2bcb101298",
-        "version" : "1.0.0"
+        "revision" : "8758611fd51fe7bfaac9325cc6897f6b357bd60b",
+        "version" : "2.0.0"
       }
     }
   ],
