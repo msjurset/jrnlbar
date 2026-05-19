@@ -1158,6 +1158,152 @@ test("VimEngine: dW deletes whole WORD including punctuation") {
     expect(ed.text == "baz", "got: \(ed.text)")
 }
 
+// ─── Text objects (iw / aw / i" / a" / i( / a(, etc.)
+
+test("VimEngine: diw deletes inner word") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz", caret: 5)  // on 'a' of bar
+    feed(engine, ["d", "i", "w"], on: ed)
+    expect(ed.text == "foo  baz", "got: \(ed.text)")
+}
+
+test("VimEngine: daw deletes word and trailing space") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz", caret: 5)
+    feed(engine, ["d", "a", "w"], on: ed)
+    expect(ed.text == "foo baz", "got: \(ed.text)")
+}
+
+test("VimEngine: ciw changes inner word and enters insert") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz", caret: 5)
+    feed(engine, ["c", "i", "w"], on: ed)
+    expect(ed.text == "foo  baz", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: yiw yanks inner word") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo bar baz", caret: 5)
+    feed(engine, ["y", "i", "w", "$", "p"], on: ed)
+    expect(ed.text == "foo bar bazbar", "got: \(ed.text)")
+}
+
+test("VimEngine: diW treats punctuation as part of WORD") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo.bar baz", caret: 2)  // on 'o' of foo
+    feed(engine, ["d", "i", "W"], on: ed)
+    expect(ed.text == " baz", "got: \(ed.text)")
+}
+
+test("VimEngine: di\" deletes inside double quotes") {
+    let engine = VimEngine()
+    let ed = StubEditor("a \"hello world\" b", caret: 7)  // inside the quotes
+    feed(engine, ["d", "i", "\""], on: ed)
+    expect(ed.text == "a \"\" b", "got: \(ed.text)")
+}
+
+test("VimEngine: da\" deletes including the double quotes") {
+    let engine = VimEngine()
+    let ed = StubEditor("a \"hello world\" b", caret: 7)
+    feed(engine, ["d", "a", "\""], on: ed)
+    expect(ed.text == "a  b", "got: \(ed.text)")
+}
+
+test("VimEngine: ci' changes inside single quotes") {
+    let engine = VimEngine()
+    let ed = StubEditor("name = 'old'", caret: 9)
+    feed(engine, ["c", "i", "'"], on: ed)
+    expect(ed.text == "name = ''", "got: \(ed.text)")
+    expect(engine.submode == .insert)
+}
+
+test("VimEngine: di( deletes inside parens") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo(a, b, c)", caret: 6)
+    feed(engine, ["d", "i", "("], on: ed)
+    expect(ed.text == "foo()", "got: \(ed.text)")
+}
+
+test("VimEngine: da( deletes including parens") {
+    let engine = VimEngine()
+    let ed = StubEditor("foo(a, b, c)", caret: 6)
+    feed(engine, ["d", "a", "("], on: ed)
+    expect(ed.text == "foo", "got: \(ed.text)")
+}
+
+test("VimEngine: di{ targets the innermost enclosing pair") {
+    let engine = VimEngine()
+    let ed = StubEditor("a { b { c } d } e", caret: 8)  // on 'c', inside inner pair
+    feed(engine, ["d", "i", "{"], on: ed)
+    expect(ed.text == "a { b {} d } e", "got: \(ed.text)")
+}
+
+test("VimEngine: di{ on outer content selects outer pair") {
+    let engine = VimEngine()
+    let ed = StubEditor("a { b { c } d } e", caret: 4)  // on 'b', only outer encloses
+    feed(engine, ["d", "i", "{"], on: ed)
+    expect(ed.text == "a {} e", "got: \(ed.text)")
+}
+
+test("VimEngine: di[ deletes inside brackets") {
+    let engine = VimEngine()
+    let ed = StubEditor("arr[0] = 1", caret: 4)
+    feed(engine, ["d", "i", "["], on: ed)
+    expect(ed.text == "arr[] = 1", "got: \(ed.text)")
+}
+
+// ─── Case operators (gU / gu / g~)
+
+test("VimEngine: gUw uppercases word") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 0)
+    feed(engine, ["g", "U", "w"], on: ed)
+    expect(ed.text == "HELLO world", "got: \(ed.text)")
+}
+
+test("VimEngine: guw lowercases word") {
+    let engine = VimEngine()
+    let ed = StubEditor("HELLO WORLD", caret: 0)
+    feed(engine, ["g", "u", "w"], on: ed)
+    expect(ed.text == "hello WORLD", "got: \(ed.text)")
+}
+
+test("VimEngine: g~w toggles case of word") {
+    let engine = VimEngine()
+    let ed = StubEditor("Hello World", caret: 0)
+    feed(engine, ["g", "~", "w"], on: ed)
+    expect(ed.text == "hELLO World", "got: \(ed.text)")
+}
+
+test("VimEngine: gUU uppercases whole line") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world\nnext line", caret: 3)
+    feed(engine, ["g", "U", "U"], on: ed)
+    expect(ed.text == "HELLO WORLD\nnext line", "got: \(ed.text)")
+}
+
+test("VimEngine: guu lowercases whole line") {
+    let engine = VimEngine()
+    let ed = StubEditor("HELLO WORLD\nNEXT LINE", caret: 3)
+    feed(engine, ["g", "u", "u"], on: ed)
+    expect(ed.text == "hello world\nNEXT LINE", "got: \(ed.text)")
+}
+
+test("VimEngine: gUiw uppercases inner word via text object") {
+    let engine = VimEngine()
+    let ed = StubEditor("hello world", caret: 8)  // on 'o' of world
+    feed(engine, ["g", "U", "i", "w"], on: ed)
+    expect(ed.text == "hello WORLD", "got: \(ed.text)")
+}
+
+test("VimEngine: gUi\" uppercases inside quotes") {
+    let engine = VimEngine()
+    let ed = StubEditor("a \"hello world\" b", caret: 7)
+    feed(engine, ["g", "U", "i", "\""], on: ed)
+    expect(ed.text == "a \"HELLO WORLD\" b", "got: \(ed.text)")
+}
+
 // ─── Summary ───
 
 print("\n\(passed + failed) tests, \(passed) passed, \(failed) failed")

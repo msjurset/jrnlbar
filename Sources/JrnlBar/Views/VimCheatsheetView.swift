@@ -65,7 +65,21 @@ struct VimCheatsheetView: View {
                 section("Repeat") {
                     row(".", "repeat last text-changing command")
                 }
-                section("Other") {
+                section("Text objects (with d / c / y / gU / gu / g~)") {
+                    row("iw / aw", "inner / around word")
+                    row("iW / aW", "inner / around WORD")
+                    row("i\" / a\"", "inside / around \"…\"")
+                    row("i' / a'", "inside / around '…'")
+                    row("i` / a`", "inside / around `…`")
+                    row("i( / a(", "inside / around ( … )  (and i)/a))")
+                    row("i[ / a[", "inside / around [ … ]  (and i]/a])")
+                    row("i{ / a{", "inside / around { … }  (and i}/a})")
+                }
+                section("Case operators") {
+                    row("gU{motion}", "uppercase over motion (gUw, gUiw, gU$…)")
+                    row("gu{motion}", "lowercase over motion")
+                    row("g~{motion}", "toggle case over motion")
+                    row("gUU / guu / g~~", "operate on whole line")
                     row("~", "toggle case of character under cursor")
                 }
                 section("Yank & paste") {

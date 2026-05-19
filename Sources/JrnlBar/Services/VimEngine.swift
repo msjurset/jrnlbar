@@ -46,8 +46,11 @@ public final class VimEngine {
     private var pendingOperator: PendingOperator?
     private var pendingOperatorCount: Int = 1
     private var pendingG: Bool = false
+    private var pendingGCount: Int = 1
     private var pendingReplace: Bool = false
     private var pendingReplaceCount: Int = 1
+    /// nil = not collecting a text object. true = around (a<obj>), false = inner (i<obj>).
+    private var pendingTextObjectAround: Bool?
     // r<char> and f/F/t/T are "pending-next-char" states.
     private var pendingFind: PendingFind?
     private var lastFind: (mode: PendingFind, char: Character)?
@@ -70,6 +73,9 @@ public final class VimEngine {
         case delete
         case yank
         case change
+        case uppercase
+        case lowercase
+        case togglecase
     }
 
     /// Pending "next char" find mode set by f/F/t/T.
@@ -200,17 +206,30 @@ public final class VimEngine {
         countBuffer = ""
 
         if let op = pendingOperator {
-            handleOperator(op, motionChar: c, count: pendingOperatorCount * n, editor: editor)
-            pendingOperator = nil
-            pendingOperatorCount = 1
+            let stillPending = handleOperator(op, motionChar: c, count: pendingOperatorCount * n, editor: editor)
+            if !stillPending {
+                pendingOperator = nil
+                pendingOperatorCount = 1
+            }
             return true
         }
 
         if pendingG {
             pendingG = false
+            let gn = pendingGCount
+            pendingGCount = 1
             switch c {
             case "g": applyMotion(.bufferStart, count: 1, editor: editor)
             case "e": applyMotion(.previousWordEnd, count: 1, editor: editor)
+            case "U":
+                pendingOperator = .uppercase
+                pendingOperatorCount = gn
+            case "u":
+                pendingOperator = .lowercase
+                pendingOperatorCount = gn
+            case "~":
+                pendingOperator = .togglecase
+                pendingOperatorCount = gn
             default: break
             }
             return true
@@ -238,7 +257,9 @@ public final class VimEngine {
                 self?.toggleCaseAtCaret(count: n, editor: ed)
             }
         case "G": applyMotion(.bufferEnd, count: 1, editor: editor)
-        case "g": pendingG = true
+        case "g":
+            pendingG = true
+            pendingGCount = n
         case "i":
             setSubmode(.insert)
         case "a":
@@ -358,7 +379,28 @@ public final class VimEngine {
         return true
     }
 
-    private func handleOperator(_ op: PendingOperator, motionChar: Character, count: Int, editor: VimTextEditor) {
+    /// Returns true if the operator remains pending (e.g. awaiting the
+    /// object character after `i` or `a`).
+    private func handleOperator(_ op: PendingOperator, motionChar: Character, count: Int, editor: VimTextEditor) -> Bool {
+        // Text object: we've seen `i` or `a`; the next char names the object.
+        if let around = pendingTextObjectAround {
+            pendingTextObjectAround = nil
+            if let range = textObjectRange(around: around, object: motionChar, editor: editor) {
+                applyOperatorToRange(op, range: range, editor: editor)
+            }
+            return false
+        }
+
+        // First char after operator: it might start a text-object scope.
+        if motionChar == "i" {
+            pendingTextObjectAround = false
+            return true
+        }
+        if motionChar == "a" {
+            pendingTextObjectAround = true
+            return true
+        }
+
         switch op {
         case .delete:
             if motionChar == "d" {
@@ -369,7 +411,6 @@ public final class VimEngine {
                 recordChange { [weak self] ed in self?.deleteOverMotion(motion, count: count, editor: ed) }
             }
         case .yank:
-            // Yank is not a "change" — don't record for `.`.
             if motionChar == "y" {
                 yankLines(count: count, editor: editor)
             } else if let motion = motionFor(motionChar) {
@@ -386,7 +427,234 @@ public final class VimEngine {
                     self?.deleteOverMotion(motion, count: count, editor: ed)
                 }
             }
+        case .uppercase:
+            applyCaseOperator(.uppercase, doubledChar: "U", motionChar: motionChar, count: count, editor: editor)
+        case .lowercase:
+            applyCaseOperator(.lowercase, doubledChar: "u", motionChar: motionChar, count: count, editor: editor)
+        case .togglecase:
+            applyCaseOperator(.togglecase, doubledChar: "~", motionChar: motionChar, count: count, editor: editor)
         }
+        return false
+    }
+
+    private func applyCaseOperator(_ op: PendingOperator, doubledChar: Character, motionChar: Character, count: Int, editor: VimTextEditor) {
+        let range: NSRange?
+        if motionChar == doubledChar {
+            // gUU / guu / g~~ — operate on whole current line(s).
+            let ns = editor.text as NSString
+            let cursor = editor.selectedRange.location
+            let start = lineStart(in: ns, of: cursor)
+            var end = start
+            for _ in 0..<count {
+                end = lineEnd(in: ns, of: end)
+                if end < ns.length { end += 1 }
+            }
+            // Trim trailing newline so case transform doesn't trip on it.
+            if end > start, ns.character(at: end - 1) == 0x0A { end -= 1 }
+            range = NSRange(location: start, length: end - start)
+        } else if let motion = motionFor(motionChar) {
+            let from = editor.selectedRange.location
+            let to = computeMotion(motion, count: count, text: editor.text, from: from)
+            let lo = min(from, to)
+            var hi = max(from, to)
+            if isInclusiveMotion(motion) {
+                hi = min(hi + 1, (editor.text as NSString).length)
+            }
+            range = NSRange(location: lo, length: hi - lo)
+        } else {
+            range = nil
+        }
+        guard let r = range, r.length > 0 else { return }
+        applyOperatorToRange(op, range: r, editor: editor)
+        recordChange { [weak self] ed in
+            // Replay deletes from current cursor; here we just re-apply the
+            // case transform to the same-length range starting at the caret.
+            let start = ed.selectedRange.location
+            let end = min((ed.text as NSString).length, start + r.length)
+            self?.applyOperatorToRange(op, range: NSRange(location: start, length: end - start), editor: ed)
+        }
+    }
+
+    private func applyOperatorToRange(_ op: PendingOperator, range: NSRange, editor: VimTextEditor) {
+        guard range.length > 0 else { return }
+        let ns = editor.text as NSString
+        let original = ns.substring(with: range)
+
+        switch op {
+        case .delete:
+            register = original
+            registerIsLine = false
+            editor.replace(in: range, with: "")
+            editor.selectedRange = NSRange(location: range.location, length: 0)
+            recordChange { [weak self] ed in
+                let start = ed.selectedRange.location
+                let end = min((ed.text as NSString).length, start + range.length)
+                ed.replace(in: NSRange(location: start, length: end - start), with: "")
+                self?.register = original
+                self?.registerIsLine = false
+            }
+        case .yank:
+            register = original
+            registerIsLine = false
+        case .change:
+            register = original
+            registerIsLine = false
+            editor.replace(in: range, with: "")
+            editor.selectedRange = NSRange(location: range.location, length: 0)
+            setSubmode(.insert)
+            recordChange { [weak self] ed in
+                let start = ed.selectedRange.location
+                let end = min((ed.text as NSString).length, start + range.length)
+                ed.replace(in: NSRange(location: start, length: end - start), with: "")
+                self?.register = original
+                self?.registerIsLine = false
+            }
+        case .uppercase:
+            editor.replace(in: range, with: original.uppercased())
+            editor.selectedRange = NSRange(location: range.location, length: 0)
+        case .lowercase:
+            editor.replace(in: range, with: original.lowercased())
+            editor.selectedRange = NSRange(location: range.location, length: 0)
+        case .togglecase:
+            var swapped = ""
+            for char in original {
+                if char.isUppercase { swapped.append(String(char).lowercased()) }
+                else if char.isLowercase { swapped.append(String(char).uppercased()) }
+                else { swapped.append(char) }
+            }
+            editor.replace(in: range, with: swapped)
+            editor.selectedRange = NSRange(location: range.location, length: 0)
+        }
+    }
+
+    // MARK: - Text objects
+
+    private func textObjectRange(around: Bool, object: Character, editor: VimTextEditor) -> NSRange? {
+        let ns = editor.text as NSString
+        let cursor = editor.selectedRange.location
+        switch object {
+        case "w": return wordObjectRange(around: around, in: ns, at: cursor, big: false)
+        case "W": return wordObjectRange(around: around, in: ns, at: cursor, big: true)
+        case "\"": return quoteObjectRange(around: around, in: ns, at: cursor, quote: 0x22)
+        case "'": return quoteObjectRange(around: around, in: ns, at: cursor, quote: 0x27)
+        case "`": return quoteObjectRange(around: around, in: ns, at: cursor, quote: 0x60)
+        case "(", ")": return bracketObjectRange(around: around, in: ns, at: cursor, open: 0x28, close: 0x29)
+        case "[", "]": return bracketObjectRange(around: around, in: ns, at: cursor, open: 0x5B, close: 0x5D)
+        case "{", "}": return bracketObjectRange(around: around, in: ns, at: cursor, open: 0x7B, close: 0x7D)
+        default: return nil
+        }
+    }
+
+    private func wordObjectRange(around: Bool, in text: NSString, at cursor: Int, big: Bool) -> NSRange? {
+        let len = text.length
+        guard cursor < len else { return nil }
+        let isPart: (unichar) -> Bool = big
+            ? { !self.isWhitespace($0) }
+            : { self.isWordCharacter($0) }
+        let onWord = isPart(text.character(at: cursor))
+
+        if onWord {
+            var start = cursor
+            while start > 0, isPart(text.character(at: start - 1)) { start -= 1 }
+            var end = cursor
+            while end < len, isPart(text.character(at: end)) { end += 1 }
+            if around {
+                var withTrailing = end
+                while withTrailing < len {
+                    let c = text.character(at: withTrailing)
+                    if c == 0x20 || c == 0x09 { withTrailing += 1 } else { break }
+                }
+                return NSRange(location: start, length: withTrailing - start)
+            }
+            return NSRange(location: start, length: end - start)
+        } else {
+            // Cursor on whitespace — span just the whitespace run for both i and a.
+            var start = cursor
+            while start > 0, !isPart(text.character(at: start - 1)), text.character(at: start - 1) != 0x0A { start -= 1 }
+            var end = cursor
+            while end < len, !isPart(text.character(at: end)), text.character(at: end) != 0x0A { end += 1 }
+            return NSRange(location: start, length: end - start)
+        }
+    }
+
+    private func quoteObjectRange(around: Bool, in text: NSString, at cursor: Int, quote: unichar) -> NSRange? {
+        let lineStartLoc = lineStart(in: text, of: cursor)
+        let lineEndLoc = lineEnd(in: text, of: cursor)
+        var positions: [Int] = []
+        var i = lineStartLoc
+        while i < lineEndLoc {
+            if text.character(at: i) == quote { positions.append(i) }
+            i += 1
+        }
+        if positions.count < 2 { return nil }
+
+        // Find the surrounding pair: walk pairs (p0,p1), (p2,p3), …
+        var leftPos = -1
+        var rightPos = -1
+        var idx = 0
+        while idx + 1 < positions.count {
+            let l = positions[idx]
+            let r = positions[idx + 1]
+            if l <= cursor && cursor <= r {
+                leftPos = l
+                rightPos = r
+                break
+            }
+            idx += 2
+        }
+        if leftPos < 0 {
+            // Cursor not inside a pair — use the first pair on the line.
+            leftPos = positions[0]
+            rightPos = positions[1]
+        }
+        if around {
+            return NSRange(location: leftPos, length: rightPos - leftPos + 1)
+        }
+        return NSRange(location: leftPos + 1, length: max(0, rightPos - leftPos - 1))
+    }
+
+    private func bracketObjectRange(around: Bool, in text: NSString, at cursor: Int, open: unichar, close: unichar) -> NSRange? {
+        let len = text.length
+        guard cursor < len else { return nil }
+
+        // Find the enclosing OPEN bracket: walk backward tracking depth.
+        var openPos = -1
+        if text.character(at: cursor) == open {
+            openPos = cursor
+        } else {
+            var depth = 0
+            var i = (text.character(at: cursor) == close) ? cursor - 1 : cursor - 1
+            while i >= 0 {
+                let c = text.character(at: i)
+                if c == close { depth += 1 }
+                else if c == open {
+                    if depth == 0 { openPos = i; break }
+                    depth -= 1
+                }
+                i -= 1
+            }
+        }
+        if openPos < 0 { return nil }
+
+        // Find matching close.
+        var depth = 0
+        var closePos = -1
+        var j = openPos + 1
+        while j < len {
+            let c = text.character(at: j)
+            if c == open { depth += 1 }
+            else if c == close {
+                if depth == 0 { closePos = j; break }
+                depth -= 1
+            }
+            j += 1
+        }
+        if closePos < 0 { return nil }
+
+        if around {
+            return NSRange(location: openPos, length: closePos - openPos + 1)
+        }
+        return NSRange(location: openPos + 1, length: max(0, closePos - openPos - 1))
     }
 
     private func motionFor(_ c: Character) -> Motion? {
@@ -499,7 +767,9 @@ public final class VimEngine {
         case "W": applyVisualMotion(.bigWordForward, count: n, editor: editor)
         case "B": applyVisualMotion(.bigWordBackward, count: n, editor: editor)
         case "E": applyVisualMotion(.bigWordEnd, count: n, editor: editor)
-        case "g": pendingG = true
+        case "g":
+            pendingG = true
+            pendingGCount = n
         case "G": applyVisualMotion(.bufferEnd, count: 1, editor: editor)
         case "0": applyVisualMotion(.lineStart, count: 1, editor: editor)
         case "^": applyVisualMotion(.lineFirstNonBlank, count: 1, editor: editor)
@@ -821,9 +1091,11 @@ public final class VimEngine {
         pendingOperator = nil
         pendingOperatorCount = 1
         pendingG = false
+        pendingGCount = 1
         pendingReplace = false
         pendingReplaceCount = 1
         pendingFind = nil
+        pendingTextObjectAround = nil
     }
 
     // MARK: - Motion application
