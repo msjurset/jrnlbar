@@ -255,9 +255,24 @@ class JrnlTextView: NSTextView {
         // Capture the OLD rect before AppKit moves the caret.
         let oldRect = blockCursorRect()
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
-        // Only repaint the block area when vim is in a "block cursor"
-        // submode — outside vim, AppKit's default beam handling is fine.
-        guard let vim = vimEngineProvider?(), vim.submode != .insert else { return }
+
+        guard let vim = vimEngineProvider?() else { return }
+
+        // VimEngine sets `selectedRange` directly, which bypasses
+        // AppKit's normal scroll-to-reveal-cursor pipeline (that runs
+        // only on insertText). Without this, j/k/G/gg/n walk the caret
+        // off screen. Gated on vim being active so unrelated paths
+        // (find-in-page, accessibility, etc.) keep AppKit's defaults.
+        // Skipped during mouse drag-select to avoid fighting AppKit's
+        // drag-scroll behavior.
+        if !stillSelecting,
+           let primary = (ranges.first as? NSValue)?.rangeValue {
+            scrollRangeToVisible(NSRange(location: primary.location, length: 0))
+        }
+
+        // Existing block-cursor invalidation — only when vim is in a
+        // block-cursor submode (outside insert).
+        guard vim.submode != .insert else { return }
         if let oldRect {
             setNeedsDisplay(oldRect.insetBy(dx: -1, dy: -1))
         }
