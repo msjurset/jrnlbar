@@ -8,23 +8,39 @@ LAUNCH_AGENT_DIR = $(HOME)/Library/LaunchAgents
 LAUNCH_AGENT_LABEL = com.local.JrnlBar
 DMG_NAME = $(PRODUCT).dmg
 
-.PHONY: build app install dmg uninstall clean run test
+.PHONY: build app icon install dmg uninstall clean run test update-vim
 
 build:
 	@echo "Building $(PRODUCT)..."
 	@swift build -c release
 
-app: build
+update-vim:
+	@echo "Updating swift-vim-engine to the latest tagged release..."
+	@swift package update swift-vim-engine
+	@echo ""
+	@echo "Now: review the diff in Package.resolved, build + smoke test, then commit."
+	@echo "  git diff Package.resolved"
+	@echo "  make run    # smoke test"
+	@echo "  git add Package.resolved && git commit -m 'Bump VimEngine to <version>'"
+
+icon:
+	@test -f AppIcon.icns || swift scripts/generate-icon.swift
+
+app: build icon
 	@echo "Assembling $(APP_BUNDLE)..."
 	@rm -rf "$(APP_BUNDLE)"
 	@mkdir -p "$(MACOS)"
 	@cp "$(BUILD_DIR)/release/$(PRODUCT)" "$(MACOS)/$(PRODUCT)"
+	@mkdir -p "$(CONTENTS)/Resources"
+	@cp AppIcon.icns "$(CONTENTS)/Resources/AppIcon.icns"
 	@cp "Resources/Info.plist" "$(CONTENTS)/Info.plist"
 	@echo "Code signing..."
 	@codesign --force --sign - "$(APP_BUNDLE)"
 
 install: app
 	@echo "Installing to $(INSTALL_DIR)..."
+	@pkill -9 -f "$(INSTALL_DIR)/$(APP_BUNDLE)" 2>/dev/null || true
+	@sleep 0.5
 	@rm -rf "$(INSTALL_DIR)/$(APP_BUNDLE)"
 	@cp -R "$(APP_BUNDLE)" "$(INSTALL_DIR)/$(APP_BUNDLE)"
 	@echo "Installing launch agent..."
