@@ -117,6 +117,11 @@ final class AppController {
         NotificationCenter.default.addObserver(self, selector: #selector(handleClosePanelRequest), name: .closePanel, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleOpenPanelRequest), name: .openPanel, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleVimStateChanged(_:)), name: .vimStateChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleHotkeyChanged), name: .hotkeyChanged, object: nil)
+    }
+
+    @objc private func handleHotkeyChanged() {
+        applyHotkeyBinding()
     }
 
     @objc private func handleVimStateChanged(_ note: Notification) {
@@ -147,10 +152,21 @@ final class AppController {
             eventKind: UInt32(kEventHotKeyPressed)
         )
         InstallEventHandler(GetApplicationEventTarget(), hotkeyCallback, 1, &eventType, nil, nil)
+        applyHotkeyBinding()
+    }
 
+    /// Re-read the toggle-panel hotkey from UserDefaults and re-register
+    /// with Carbon. Called from setup() and again whenever the
+    /// preferences emit `hotkeyChanged`.
+    func applyHotkeyBinding() {
+        if let ref = hotkeyRef {
+            UnregisterEventHotKey(ref)
+            hotkeyRef = nil
+        }
+        let binding = HotkeyBinding.load(forKey: HotkeyManager.togglePanelKey) ?? .default
         let hotkeyID = EventHotKeyID(signature: OSType(0x4A524E4C), id: 1)
         RegisterEventHotKey(
-            UInt32(kVK_ANSI_J), UInt32(shiftKey | cmdKey), hotkeyID,
+            UInt32(binding.keyCode), binding.modifiers, hotkeyID,
             GetApplicationEventTarget(), 0, &hotkeyRef
         )
     }

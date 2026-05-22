@@ -3,6 +3,7 @@ import AppKit
 
 public struct PreferencesView: View {
     @AppStorage("externalEditorBundleID") private var externalEditorBundleID: String = ""
+    @State private var hotkey: HotkeyBinding? = HotkeyBinding.load(forKey: HotkeyManager.togglePanelKey)
 
     private let templatesPath = "~/.local/share/jrnl/templates"
 
@@ -38,6 +39,34 @@ public struct PreferencesView: View {
 
             Divider()
 
+            // Toggle-panel hotkey
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Toggle-panel hotkey")
+                    .font(.headline)
+                Text("Global shortcut to open / close the JrnlBar panel. Default ⇧⌘J. Esc cancels recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    HotkeyRecorder(binding: $hotkey)
+                        .frame(height: 24)
+                    Button("Reset to default") {
+                        hotkey = .default
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .onChange(of: hotkey) { _, newValue in
+                if let newValue {
+                    newValue.save(forKey: HotkeyManager.togglePanelKey)
+                } else {
+                    HotkeyBinding.clear(forKey: HotkeyManager.togglePanelKey)
+                }
+                NotificationCenter.default.post(name: .hotkeyChanged, object: nil)
+            }
+
+            Divider()
+
             // Templates
             VStack(alignment: .leading, spacing: 6) {
                 Text("Templates")
@@ -59,7 +88,7 @@ public struct PreferencesView: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(width: 460, height: 280)
+        .frame(width: 460, height: 420)
     }
 
     private func revealTemplatesFolder() {

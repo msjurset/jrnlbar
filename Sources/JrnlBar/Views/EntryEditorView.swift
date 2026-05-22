@@ -121,6 +121,11 @@ struct EntryEditorView: NSViewRepresentable {
                     tv.refreshCursorArea()
                 }
             }
+        } else if vimActiveNow {
+            // Ensure color is correct on every update while vim is active
+            if let tv = textView as? JrnlTextView {
+                tv.refreshCursorArea()
+            }
         }
         context.coordinator.lastVimActive = vimActiveNow
     }
@@ -240,9 +245,34 @@ class JrnlTextView: NSTextView {
             super.drawInsertionPoint(in: rect, color: color, turnedOn: flag)
             return
         }
-        guard flag, let block = blockCursorRect() else { return }
-        NSColor.selectedTextBackgroundColor.withAlphaComponent(0.75).setFill()
-        block.fill()
+
+        // When vim is in a block-mode, we draw our own block and SKIP 
+        // calling super. This is the only definitive way to prevent 
+        // AppKit from drawing the standard vertical beam (which 
+        // otherwise causes a "double cursor" artifact).
+        if flag {
+            var block = rect
+            
+            // Use character-specific bounding rect for height so the 
+            // cursor doesn't include line spacing or paragraph leading 
+            // (fixes the "too long" cursor on the jrnl title line).
+            if let lm = layoutManager, let tc = textContainer {
+                let ns = string as NSString
+                let charIndex = min(max(0, selectedRange.location), ns.length)
+                // If at the very end, we look at the glyph just before
+                // the caret to find the correct height metrics.
+                let lookupIndex = (charIndex >= ns.length && ns.length > 0) ? charIndex - 1 : charIndex
+                let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: lookupIndex, length: 1), actualCharacterRange: nil)
+                let charRect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+                
+                block.size.height = charRect.height
+                block.origin.y = charRect.origin.y + textContainerOrigin.y
+            }
+            
+            block.size.width = approximateCharWidth()
+            NSColor.selectedTextBackgroundColor.withAlphaComponent(0.75).setFill()
+            block.fill()
+        }
     }
 
     /// Refresh the area where the cursor was painted. Called when the
@@ -274,7 +304,7 @@ class JrnlTextView: NSTextView {
         // off screen. Skipped during mouse drag-select to avoid
         // fighting AppKit's own drag-scroll.
         if !stillSelecting,
-           let primary = (ranges.first as? NSValue)?.rangeValue {
+           let primary = ranges.first?.rangeValue {
             scrollRangeToVisible(NSRange(location: primary.location, length: 0))
         }
 
@@ -283,48 +313,6 @@ class JrnlTextView: NSTextView {
         if vim.submode != .insert {
             needsDisplay = true
         }
-    }
-
-    private func blockCursorRect() -> NSRect? {
-        guard let layoutManager, let textContainer else { return nil }
-        let ns = string as NSString
-        let cursor = selectedRange.location
-
-        // End of buffer (no character under caret): synthesise a cell
-        // one char wide just past the last glyph.
-        if cursor >= ns.length {
-            let lineHeight = font?.boundingRectForFont.height ?? 16
-            if ns.length == 0 {
-                let origin = textContainerOrigin
-                return NSRect(x: origin.x, y: origin.y, width: 8, height: lineHeight)
-            }
-            let lastRange = NSRange(location: ns.length - 1, length: 1)
-            let glyphRange = layoutManager.glyphRange(forCharacterRange: lastRange, actualCharacterRange: nil)
-            let lastRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            return NSRect(
-                x: lastRect.maxX + textContainerOrigin.x,
-                y: lastRect.minY + textContainerOrigin.y,
-                width: max(lastRect.width, 8),
-                height: lastRect.height
-            )
-        }
-
-        let range = NSRange(location: cursor, length: 1)
-        let chAtCursor = ns.character(at: cursor)
-        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-        var r = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-        r.origin.x += textContainerOrigin.x
-        r.origin.y += textContainerOrigin.y
-
-        // On a newline (empty line, or end-of-line position), the layout
-        // manager reports a rect spanning the rest of the line. Vim shows
-        // a normal char-width block there, so narrow it back down.
-        if chAtCursor == 0x0A {
-            r.size.width = approximateCharWidth()
-        } else if r.width <= 1 {
-            r.size.width = approximateCharWidth()
-        }
-        return r
     }
 
     private func approximateCharWidth() -> CGFloat {
@@ -373,36 +361,56 @@ class JrnlTextView: NSTextView {
         }
     }
 
+    /// Cmd shortcut handler. **Must gate on first responder.**
+    /// `performKeyEquivalent` walks the entire view hierarchy and
+    /// the first view that returns `true` claims the event. Without
+    /// the gate, any JrnlTextView in the window snatches Cmd+V/C/X/A
+    /// away from other focused text fields — harmless in jrnlbar
+    /// today (single text input in the floating panel) but a real
+    /// trap if this class is ever copied into a host with multiple
+    /// text inputs. Defensive: pay one extra check now so the
+    /// reference pattern stays safe to lift.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command) {
-            switch event.charactersIgnoringModifiers {
-            case "v":
-                pasteAsPlainText(nil)
-                return true
-            case "c":
-                copy(nil)
-                return true
-            case "x":
-                cut(nil)
-                return true
-            case "a":
-                selectAll(nil)
-                return true
-            case "e":
-                openExternalHandler?()
-                return true
-            case "z":
-                if event.modifierFlags.contains(.shift) {
-                    undoManager?.redo()
-                } else {
-                    undoManager?.undo()
-                }
-                return true
-            default:
-                break
+        guard isCurrentFirstResponder, event.modifierFlags.contains(.command)
+        else { return super.performKeyEquivalent(with: event) }
+        switch event.charactersIgnoringModifiers {
+        case "v":
+            pasteAsPlainText(nil)
+            return true
+        case "c":
+            copy(nil)
+            return true
+        case "x":
+            cut(nil)
+            return true
+        case "a":
+            selectAll(nil)
+            return true
+        case "e":
+            openExternalHandler?()
+            return true
+        case "z":
+            if event.modifierFlags.contains(.shift) {
+                undoManager?.redo()
+            } else {
+                undoManager?.undo()
             }
+            return true
+        default:
+            return super.performKeyEquivalent(with: event)
         }
-        return super.performKeyEquivalent(with: event)
+    }
+
+    /// True when this text view (via its field editor) actually owns
+    /// keyboard focus in its window. NSTextView's `firstResponder`
+    /// for an editable text view is typically the view itself, but
+    /// the field-editor variant routes through the NSText delegate,
+    /// so we check both.
+    private var isCurrentFirstResponder: Bool {
+        guard let fr = window?.firstResponder else { return false }
+        if fr === self { return true }
+        if let text = fr as? NSText, text.delegate === self { return true }
+        return false
     }
 
     override func keyDown(with event: NSEvent) {
