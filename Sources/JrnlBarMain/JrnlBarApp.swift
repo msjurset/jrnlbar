@@ -236,6 +236,10 @@ final class AppController {
 
         menu.addItem(NSMenuItem.separator())
 
+        let restartItem = NSMenuItem(title: "Restart", action: #selector(restart), keyEquivalent: "")
+        restartItem.target = self
+        menu.addItem(restartItem)
+
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -266,6 +270,17 @@ final class AppController {
         }
         NSApp.activate(ignoringOtherApps: true)
         preferencesWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func restart() {
+        let path = Bundle.main.bundlePath
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done; open \"\(path)\""
+        let task = Process()
+        task.launchPath = "/bin/sh"
+        task.arguments = ["-c", script]
+        task.launch()
+        NSApp.terminate(nil)
     }
 
     @objc private func quit() {
@@ -311,6 +326,9 @@ enum JrnlBarApp {
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+
+        let delegate = JrnlBarAppDelegate()
+        app.delegate = delegate
 
         // Force enable spell and grammar checking regardless of past app-specific settings
         UserDefaults.standard.set(true, forKey: "NSGrammarCheckingEnabled")

@@ -15,7 +15,7 @@ struct EntryEditorView: NSViewRepresentable {
     var onSlashKeyEvent: (SuggestionKeyEvent) -> Bool  // Returns true if handled
 
     enum SuggestionKeyEvent {
-        case arrowUp, arrowDown, enter, escape, tab, space
+        case arrowUp, arrowDown, arrowLeft, arrowRight, enter, escape, tab, space
     }
 
     func makeCoordinator() -> Coordinator {
@@ -449,6 +449,10 @@ class JrnlTextView: NSTextView {
         // When tag suggestions are showing, intercept navigation keys
         if isShowingTags?() == true {
             switch event.keyCode {
+            case 123: // left arrow
+                if tagKeyHandler?(.arrowLeft) == true { return }
+            case 124: // right arrow
+                if tagKeyHandler?(.arrowRight) == true { return }
             case 125: // down arrow
                 if tagKeyHandler?(.arrowDown) == true { return }
             case 126: // up arrow
@@ -468,6 +472,10 @@ class JrnlTextView: NSTextView {
         // plus spacebar (49) for the exact-match commit path.
         if isShowingSlash?() == true {
             switch event.keyCode {
+            case 123:
+                if slashKeyHandler?(.arrowLeft) == true { return }
+            case 124:
+                if slashKeyHandler?(.arrowRight) == true { return }
             case 125:
                 if slashKeyHandler?(.arrowDown) == true { return }
             case 126:

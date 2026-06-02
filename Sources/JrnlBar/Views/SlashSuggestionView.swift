@@ -40,7 +40,7 @@ struct SlashSuggestionView: View {
                     }
                 }
 
-                Text("↑↓ Enter")
+                Text("←→ Tab Enter")
                     .font(.caption2)
                     .foregroundStyle(.quaternary)
                     .layoutPriority(1)
@@ -53,24 +53,26 @@ struct SlashSuggestionView: View {
 
     @ViewBuilder
     private func pill(command: SlashCommand, index: Int) -> some View {
-        HStack(spacing: 4) {
+        let isSelected = index == selectedIndex
+        HStack(spacing: 8) {
             Text("/\(command.name)")
-                .font(.caption)
-                .fontWeight(.medium)
+                .font(.caption.bold())
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+            
             if !command.hint.isEmpty {
                 Text(command.hint)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.5) : Color.primary.opacity(0.4))
             }
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
         .background(
-            index == selectedIndex
-                ? Color.accentColor.opacity(0.3)
-                : Color.primary.opacity(0.06)
+            isSelected
+                ? Color.accentColor
+                : Color.primary.opacity(0.08)
         )
         .clipShape(Capsule())
         .onTapGesture {

@@ -121,7 +121,7 @@ private let predictivePanelFragments: [String] = [
     "WritingTools",
     "TextCompletion",
     // macOS 26's empty-rounded autofill popup — confirmed via
-    // reaper diagnostics (~/.recruit/reaper.log). Animates from
+    // reaper diagnostics (~/.jrnlbar/reaper.log). Animates from
     // ~312×237 to ~332×265 right after a layout change (cold
     // launch or console expand). The "SP" prefix isn't Sparkle —
     // Sparkle uses SU/SPU. This is the system predictive surface
@@ -144,7 +144,7 @@ private let reaperLogPath: String = {
     // doesn't need to mess with stderr redirection. Truncated on
     // app launch via O_TRUNC equivalent so the log reflects only
     // the current session.
-    let path = NSHomeDirectory() + "/.recruit/reaper.log"
+    let path = NSHomeDirectory() + "/.jrnlbar/reaper.log"
     try? "".write(toFile: path, atomically: true, encoding: .utf8)
     return path
 }()
@@ -208,20 +208,20 @@ func installFieldEditorInterceptor(on window: NSWindow) {
 /// If a phantom popup is ever reported, set
 /// `NSApplication.shared.delegate = JrnlBarAppDelegate()` in
 /// JrnlBarApp.main() before `app.run()`.
-final class JrnlBarAppDelegate: NSObject, NSApplicationDelegate {
+public final class JrnlBarAppDelegate: NSObject, NSApplicationDelegate {
     private var observers: [NSObjectProtocol] = []
     private var eventMonitor: Any?
 
-    /// Closure wired by RecruitMacApp at construction time so the
+    /// Closure wired by JrnlBarApp at construction time so the
     /// AppDelegate can hand off incoming URLs (e.g. from the
-    /// Chrome extension's `recruit://import?...`) to the
-    /// RecruitStore. We don't keep a direct reference to the
+    /// Chrome extension's `jrnlbar://import?...`) to the
+    /// JrnlStore. We don't keep a direct reference to the
     /// store here because the delegate is instantiated before
     /// the store (via @NSApplicationDelegateAdaptor); the App
     /// struct injects this closure once both exist.
-    @MainActor var urlHandler: ((URL) -> Void)?
+    @MainActor public var urlHandler: ((URL) -> Void)?
 
-    func application(_ application: NSApplication, open urls: [URL]) {
+    public func application(_ application: NSApplication, open urls: [URL]) {
         // AppDelegate path is the reliable one on macOS — SwiftUI's
         // `.onOpenURL` on a Scene doesn't always fire when an
         // NSApplicationDelegateAdaptor is present. We use BOTH:
@@ -234,9 +234,9 @@ final class JrnlBarAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    override init() {
+    public override init() {
         // Layer 0 — fires the instant
-        // `@NSApplicationDelegateAdaptor(RecruitAppDelegate.self)`
+        // `@NSApplicationDelegateAdaptor(JrnlBarAppDelegate.self)`
         // instantiates this delegate, which SwiftUI does very early
         // in the App lifecycle — before applicationWillFinishLaunching,
         // before any window has been laid out.
@@ -271,7 +271,7 @@ final class JrnlBarAppDelegate: NSObject, NSApplicationDelegate {
         super.init()
     }
 
-    func applicationWillFinishLaunching(_ notification: Notification) {
+    public func applicationWillFinishLaunching(_ notification: Notification) {
         // Earliest reliable hook — NSApp exists and any windows
         // SwiftUI has prepared are visible in NSApp.windows, but the
         // app hasn't entered its run loop yet, so the user can't have
@@ -355,7 +355,7 @@ final class JrnlBarAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    public func applicationDidFinishLaunching(_ notification: Notification) {
         // Re-sweep in case any windows came up between
         // applicationWillFinishLaunching and now.
         for window in NSApp.windows {

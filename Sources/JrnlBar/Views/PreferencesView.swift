@@ -3,6 +3,7 @@ import AppKit
 
 public struct PreferencesView: View {
     @AppStorage("externalEditorBundleID") private var externalEditorBundleID: String = ""
+    @AppStorage("jrnlPathOverride") private var jrnlPathOverride: String = ""
     @State private var hotkey: HotkeyBinding? = HotkeyBinding.load(forKey: HotkeyManager.togglePanelKey)
 
     private let templatesPath = "~/.local/share/jrnl/templates"
@@ -13,6 +14,39 @@ public struct PreferencesView: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Preferences")
                 .font(.title2.bold())
+
+            // Jrnl Path
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Jrnl executable path")
+                    .font(.headline)
+                Text("Path to the jrnl CLI. If empty, JrnlBar will try to auto-detect it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    FilterField(
+                        placeholder: "/opt/homebrew/bin/jrnl, /usr/local/bin/jrnl, …",
+                        text: $jrnlPathOverride
+                    )
+                    .frame(height: 24)
+                    Button("Auto-detect") {
+                        jrnlPathOverride = ""
+                    }
+                    .controlSize(.small)
+                    .disabled(jrnlPathOverride.isEmpty)
+                }
+                if !jrnlPathOverride.isEmpty && !FileManager.default.isExecutableFile(atPath: jrnlPathOverride) {
+                    Text("Warning: path is not an executable file.")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                } else {
+                    Text("Currently using: \(JrnlPathManager.actualPath)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
 
             // External editor
             VStack(alignment: .leading, spacing: 6) {
@@ -88,7 +122,7 @@ public struct PreferencesView: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(width: 460, height: 420)
+        .frame(width: 460, height: 520)
     }
 
     private func revealTemplatesFolder() {

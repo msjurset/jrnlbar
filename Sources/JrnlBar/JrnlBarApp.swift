@@ -103,6 +103,11 @@ final class AppController {
         aboutItem.target = self
         menu.addItem(aboutItem)
         menu.addItem(NSMenuItem.separator())
+
+        let restartItem = NSMenuItem(title: "Restart", action: #selector(restart), keyEquivalent: "")
+        restartItem.target = self
+        menu.addItem(restartItem)
+
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -115,6 +120,15 @@ final class AppController {
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(nil)
+    }
+
+    @objc private func restart() {
+        let path = Bundle.main.bundlePath
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = [path]
+        task.launch()
+        NSApp.terminate(nil)
     }
 
     @objc private func quit() {
@@ -145,6 +159,9 @@ enum JrnlBarApp {
     static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        
+        let delegate = JrnlBarAppDelegate()
+        app.delegate = delegate
 
         // Set up everything before the run loop starts
         AppController.shared.setup()

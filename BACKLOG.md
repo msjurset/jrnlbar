@@ -55,9 +55,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 - [x] **Preferences window** — `externalEditorBundleID` field with
       quick-pick buttons, "Reveal templates folder" button. Right-click
       menu → Preferences… or `Cmd+,` from inside the panel.
-- [ ] **Hotkey rebind** — let users change `Shift+Cmd+J` via the
-      Preferences window. Needs a custom hotkey recorder + dynamic
-      Carbon registration.
+- [x] **Hotkey rebind** — lets users change `Shift+Cmd+J` via the
+      Preferences window. Uses a custom hotkey recorder + dynamic
+      Carbon registration. (Implemented in v1.2.0)
 - [ ] **In-app template editor** — currently the Preferences window
       only reveals the templates folder. A small pager + editor for
       the four (or N) template files would round it out, but
@@ -69,9 +69,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
       size. Allow drag-resize and persist last size per launch.
 - [ ] **Word / char / reading-time counter** — Small live readout in the
       submit bar footer.
-- [ ] **Crash-safe draft autosave** — Persist the in-flight buffer to disk
-      every N seconds (and on focus loss). On launch, restore the draft
-      if non-empty. Survives app quit, panel close, crash.
+- [x] **Crash-safe draft autosave** — Persists the in-flight buffer to disk
+      on every change (and on focus loss). Restores the draft on launch
+      if non-empty. Survives app quit, panel close, and crashes.
 - [ ] **Recent entries free-text filter** — Add a search field above the
       recents list that filters by body text in addition to the existing
       tag filter.
@@ -97,10 +97,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 
 ## Utility / Quality
 
-- [ ] **Auto-detect jrnl path** — Currently hard-coded to
-      `/opt/homebrew/bin/jrnl`. Probe `/usr/local/bin`, `$PATH`, and a
-      user-override preference. Removes a silent failure mode for Intel
-      Macs and pipx installs.
+- [x] **Auto-detect jrnl path** — Probes common paths (/opt/homebrew,
+      /usr/local, /usr, /run/current-system) and $PATH. Includes a
+      `jrnlPathOverride` preference for custom setups.
 - [ ] **Rotating encrypted backups** — On each save, snapshot the
       journal file to `~/Library/Application Support/JrnlBar/backups/`,
       keeping the last N. Optional encryption with a user-supplied
@@ -113,9 +112,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 - [ ] **Conflict detection** — If the journal file mtime changed while
       the JrnlBar editor was open (external `jrnl` CLI run, another
       tool, manual edit), warn before overwriting.
-- [ ] **Migrate to swift-vim-engine v2.0** — adopt the `@MainActor`
+- [x] **Migrate to swift-vim-engine v2.0** — adopt the `@MainActor`
       isolation, wrap the test target's top-level code in
-      `MainActor.assumeIsolated`. Currently pinned at v1.0.0.
+      `MainActor.assumeIsolated`. (Done in v1.3.0)
 
 ## Intelligence (BYO API key, opt-in)
 
@@ -147,12 +146,10 @@ Privacy stance must be clear: nothing leaves the device without consent.
 
 ## Top 3 (current priorities)
 
-1. **Preferences window + hotkey rebind** — finishes the slice 2 / 3
-   work from the original plan. Replaces `defaults write` for the
-   external editor and surfaces the templates folder.
-2. **Auto-detect jrnl path + crash-safe draft autosave** — invisible
-   quality wins; users get fewer "lost the thing I typed" moments and
-   the app works on more setups out of the box.
-3. **Ask-my-journal (RAG)** — the one feature that transforms what the
+1. **Ask-my-journal (RAG)** — the one feature that transforms what the
    app *is* rather than polishes it. Only worth doing with commitment
    to the BYO-API-key path.
+2. **Rotating encrypted backups** — security and peace of mind for
+   long-term journalers.
+3. **macOS Shortcuts action** — let users integrate jrnl into their
+   automated workflows.

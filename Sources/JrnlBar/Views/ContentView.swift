@@ -275,6 +275,7 @@ public struct ContentView: View {
         }
         .frame(width: 400, height: 500)
         .task {
+            entryText = DraftManager.load()
             slashCommands = slashRegistry.reload()
             await loadJournals()
             await loadData()
@@ -291,6 +292,11 @@ public struct ContentView: View {
         }
         .onChange(of: slashPrefix) { _, _ in
             slashSelectedIndex = 0
+        }
+        .onChange(of: entryText) { _, newValue in
+            if !isEditing {
+                DraftManager.save(text: newValue)
+            }
         }
         .onChange(of: currentMode) { _, newMode in
             NotificationCenter.default.post(
@@ -323,13 +329,16 @@ public struct ContentView: View {
         guard !items.isEmpty else { return false }
 
         switch event {
-        case .arrowDown:
-            tagSelectedIndex = min(tagSelectedIndex + 1, items.count - 1)
+        case .arrowDown, .arrowRight:
+            tagSelectedIndex = (tagSelectedIndex + 1) % items.count
             return true
-        case .arrowUp:
-            tagSelectedIndex = max(tagSelectedIndex - 1, 0)
+        case .arrowUp, .arrowLeft:
+            tagSelectedIndex = (tagSelectedIndex - 1 + items.count) % items.count
             return true
-        case .enter, .tab:
+        case .tab:
+            tagSelectedIndex = (tagSelectedIndex + 1) % items.count
+            return true
+        case .enter:
             let tag = items[tagSelectedIndex]
             insertTagViaBinding(tag)
             return true
@@ -350,18 +359,19 @@ public struct ContentView: View {
 
     private func handleSlashKey(_ event: EntryEditorView.SuggestionKeyEvent) -> Bool {
         let items = slashSuggestion.filteredCommands
+        guard !items.isEmpty else { return false }
 
         switch event {
-        case .arrowDown:
-            guard !items.isEmpty else { return false }
-            slashSelectedIndex = min(slashSelectedIndex + 1, items.count - 1)
+        case .arrowDown, .arrowRight:
+            slashSelectedIndex = (slashSelectedIndex + 1) % items.count
             return true
-        case .arrowUp:
-            guard !items.isEmpty else { return false }
-            slashSelectedIndex = max(slashSelectedIndex - 1, 0)
+        case .arrowUp, .arrowLeft:
+            slashSelectedIndex = (slashSelectedIndex - 1 + items.count) % items.count
             return true
-        case .enter, .tab:
-            guard !items.isEmpty else { return false }
+        case .tab:
+            slashSelectedIndex = (slashSelectedIndex + 1) % items.count
+            return true
+        case .enter:
             commitSlashCommand(items[slashSelectedIndex])
             return true
         case .escape:
@@ -449,7 +459,7 @@ public struct ContentView: View {
     private func cancelEdit() {
         editingEntry = nil
         editingJournal = nil
-        entryText = ""
+        entryText = DraftManager.load()
         currentMode = nil
         vimEngine = nil
     }
@@ -500,6 +510,7 @@ public struct ContentView: View {
                     try await service.submitEntry(text, journal: selectedJournal)
                     statusMessage = "Saved"
                     sendNotification("Entry saved to \(selectedJournal)")
+                    DraftManager.clear()
                 }
                 entryText = ""
                 currentMode = nil
@@ -529,6 +540,9 @@ public struct ContentView: View {
 
         do {
             try entryText.write(to: tempFileURL, atomically: true, encoding: .utf8)
+            if !isEditing {
+                DraftManager.save(text: entryText)
+            }
         } catch {
             statusMessage = "Failed to create temp file"
             return
@@ -549,6 +563,9 @@ public struct ContentView: View {
             Task { @MainActor in
                 if let updatedText = try? String(contentsOf: tempFileURL, encoding: .utf8) {
                     self.entryText = updatedText
+                    if !self.isEditing {
+                        DraftManager.save(text: updatedText)
+                    }
                 }
                 try? FileManager.default.removeItem(at: tempFileURL)
                 NotificationCenter.default.post(name: .openPanel, object: nil)

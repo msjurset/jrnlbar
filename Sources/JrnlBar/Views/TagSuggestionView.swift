@@ -41,7 +41,7 @@ struct TagSuggestionView: View {
 
                 Spacer()
 
-                Text("↑↓ Enter")
+                Text("←→ Tab Enter")
                     .font(.caption2)
                     .foregroundStyle(.quaternary)
             }

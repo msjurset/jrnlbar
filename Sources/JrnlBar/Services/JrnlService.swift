@@ -43,7 +43,7 @@ public enum JrnlParser {
 }
 
 public actor JrnlService {
-    private let jrnlPath = "/opt/homebrew/bin/jrnl"
+    private var jrnlPath: String { JrnlPathManager.actualPath }
 
     public init() {}
 
