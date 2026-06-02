@@ -41,9 +41,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[-]` dro
 - [ ] **Calendar context seed** — On open, offer a "Seed from today's
       meetings" button. Reads EventKit, builds a draft listing today's
       meeting titles + times as a starting point.
-- [ ] **Now-Playing / weather / location stamp** — Opt-in metadata header
-      auto-prepended to a new entry (currently-playing track, current
-      weather + location). Useful for memory-jogging context.
+- [x] **Now-Playing / weather / location stamp** — Implemented via
+      dynamic `/weather` and `/loc` inline slash commands.
 - [ ] **Drag-and-drop attachments** — Drop an image or file onto the editor;
       JrnlBar copies it to `~/Documents/jrnl-attachments/<date>/` and
       inserts a relative markdown link at the cursor.

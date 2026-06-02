@@ -21,6 +21,13 @@ A macOS menu bar app for quickly adding journal entries via the [jrnl](https://j
 ### Slash commands
 Type `/` in the editor to open a horizontal dropdown of available commands. Counts work; `Tab`/`Enter` or `Space` (on exact match) commits.
 
+- **Dynamic Inline Commands** — insert formatted text, live context, or shell out to `jrnl`:
+  - `/todo` — inserts a markdown checkbox `- [ ] `
+  - `/quote` — inserts a blockquote `> `
+  - `/date` / `/now` — inserts the current date or time
+  - `/weather` / `/loc` — fetches and inserts local weather or city/state (requires Location permission)
+  - `/last` — inserts the body of your last `jrnl` entry as a blockquote
+  - `/tags` — inserts your top 10 most used tags
 - **Templates** — markdown files in `~/.local/share/jrnl/templates/` (the same folder jrnl's `--template` flag reads). Four defaults are seeded on first launch if the folder is empty: `morning-standup.md`, `gratitude.md`, `weekly-review.md`, `meeting-notes.md`. Each supports `{{date}}`, `{{time}}`, `{{weekday}}`, and `{{cursor}}` tokens (JrnlBar-only — these stay literal if you also use the file via `jrnl --template`).
 - **Mode commands** — `/uc` toggles uppercase typing, `/vim` enters full vim editor mode (see below). Names are case-insensitive (`/UC` and `/vim` both work).
 - **Escape sequence** — type `//name` to write a literal `/name` in the entry; the leading double-slash is stripped at save time.

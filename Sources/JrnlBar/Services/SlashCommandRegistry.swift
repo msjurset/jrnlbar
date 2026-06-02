@@ -6,15 +6,18 @@ import Foundation
 public final class SlashCommandRegistry {
     public static let shared = SlashCommandRegistry(
         templateStore: .shared,
-        modes: builtInModeCommands
+        modes: builtInModeCommands,
+        inlines: builtInInlineCommands
     )
 
     private let templateStore: TemplateStore
     private let modes: [ModeCommand]
+    private let inlines: [InlineCommand]
 
-    public init(templateStore: TemplateStore, modes: [ModeCommand] = builtInModeCommands) {
+    public init(templateStore: TemplateStore, modes: [ModeCommand] = builtInModeCommands, inlines: [InlineCommand] = builtInInlineCommands) {
         self.templateStore = templateStore
         self.modes = modes
+        self.inlines = inlines
     }
 
     /// Reload file-backed templates from disk (mode commands are static).
@@ -26,13 +29,16 @@ public final class SlashCommandRegistry {
     }
 
     /// All registered slash commands. Mode commands first (alphabetical),
-    /// then templates (filesystem order).
+    /// then inlines (alphabetical), then templates (filesystem order).
     public var all: [SlashCommand] {
         let modeItems = modes
             .sorted { $0.name < $1.name }
             .map(SlashCommand.mode)
+        let inlineItems = inlines
+            .sorted { $0.name < $1.name }
+            .map(SlashCommand.inline)
         let templateItems = templateStore.templates.map(SlashCommand.template)
-        return modeItems + templateItems
+        return modeItems + inlineItems + templateItems
     }
 
     /// Commands whose name (case-insensitive) starts with the given

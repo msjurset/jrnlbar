@@ -402,16 +402,42 @@ public struct ContentView: View {
             let (expanded, cursorOffset) = template.expand()
             entryText.replaceSubrange(range, with: expanded)
             pendingCursor = prefixStartUTF16 + cursorOffset
+            slashPrefix = ""
         case .mode(let modeCommand):
             entryText.replaceSubrange(range, with: "")
             pendingCursor = prefixStartUTF16
+            slashPrefix = ""
             if currentMode == modeCommand.mode {
                 exitCurrentMode()
             } else {
                 activateMode(modeCommand.mode)
             }
+        case .inline(let inlineCommand):
+            // Clear the typed prefix immediately so the dropdown dismisses
+            entryText.replaceSubrange(range, with: "")
+            pendingCursor = prefixStartUTF16
+            slashPrefix = ""
+            
+            // Execute the async command and inject the result at the cursor
+            Task {
+                do {
+                    let result = try await inlineCommand.action()
+                    if !result.isEmpty {
+                        await MainActor.run {
+                            // Re-calculate insertion point in case user typed while waiting
+                            let currentUTF16 = entryText.utf16
+                            let safeOffset = min(pendingCursor ?? prefixStartUTF16, currentUTF16.count)
+                            let insertIndex = String.Index(utf16Offset: safeOffset, in: entryText)
+                            entryText.insert(contentsOf: result, at: insertIndex)
+                            pendingCursor = safeOffset + result.utf16.count
+                        }
+                    }
+                } catch {
+                    // Fail silently for now; could add a toast/banner in the future
+                    print("Inline command failed: \(error)")
+                }
+            }
         }
-        slashPrefix = ""
     }
 
     private func activateMode(_ mode: TextMode) {

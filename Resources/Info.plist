@@ -20,6 +20,8 @@
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>JrnlBar needs your location to fetch the local weather and current city for inline commands like /weather and /loc.</string>
     <key>NSServices</key>
     <array>
         <dict>
