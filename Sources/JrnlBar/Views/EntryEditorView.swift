@@ -156,9 +156,136 @@ struct EntryEditorView: NSViewRepresentable {
                 parent.slashPrefix = ""
                 return
             }
+
+            // Handle downward renumbering if an ordered list item was deleted/merged.
+            let nsString = textView.string as NSString
+            let selection = textView.selectedRange()
+            let lineRange = nsString.lineRange(for: NSRange(location: selection.location, length: 0))
+            let line = nsString.substring(with: lineRange)
+            let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+            let body = String(line.dropFirst(indent.count))
+
+            if let kind = ListPrefix.detect(in: body), case .ordered(let n) = kind {
+                renumberFollowing(in: textView, from: selection.location, expectedIndent: indent, startNumber: n + 1)
+            }
+
             let tag = findTagPrefix(in: textView)
             parent.tagPrefix = tag
             parent.slashPrefix = tag.isEmpty ? findSlashPrefix(in: textView) : ""
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                return handleNewline(in: textView)
+            }
+            return false
+        }
+
+        private func handleNewline(in textView: NSTextView) -> Bool {
+            let nsString = textView.string as NSString
+            let selection = textView.selectedRange()
+            // Only smart-continue for a single insertion point (no selection).
+            guard selection.length == 0 else { return false }
+
+            let lineRange = nsString.lineRange(for: NSRange(location: selection.location, length: 0))
+            let line = nsString.substring(with: lineRange)
+            let lineNoNewline = line.hasSuffix("\n") ? String(line.dropLast()) : line
+
+            let indent = String(lineNoNewline.prefix(while: { $0 == " " || $0 == "\t" }))
+            let bodyAfterIndent = String(lineNoNewline.dropFirst(indent.count))
+
+            guard let kind = ListPrefix.detect(in: bodyAfterIndent) else { return false }
+
+            // Smart-continue fires when the caret is at or past the end of the
+            // prefix on this line — including mid-line splits. Caret inside
+            // the indent/prefix region falls through to the default newline.
+            let prefixEnd = lineRange.location + (indent as NSString).length + kind.prefixLength
+            guard selection.location >= prefixEnd else { return false }
+
+            let trailing = String(bodyAfterIndent.dropFirst(kind.prefixLength))
+
+            if trailing.isEmpty {
+                // Empty list item — strip the indent + prefix to exit the list.
+                let suffix = line.hasSuffix("\n") ? "\n" : ""
+                let replacement = suffix
+                let replaceRange = lineRange
+                guard textView.shouldChangeText(in: replaceRange, replacementString: replacement) else {
+                    return false
+                }
+                textView.replaceCharacters(in: replaceRange, with: replacement)
+                textView.didChangeText()
+                let newCaret = lineRange.location + (replacement as NSString).length
+                textView.setSelectedRange(NSRange(location: newCaret, length: 0))
+
+                if case .ordered(let n) = kind {
+                    renumberFollowing(in: textView, from: newCaret, expectedIndent: indent, startNumber: n)
+                }
+                return true
+            }
+
+            let insertion = "\n" + kind.continuation(indent: indent)
+            let insertRange = NSRange(location: selection.location, length: 0)
+            guard textView.shouldChangeText(in: insertRange, replacementString: insertion) else {
+                return false
+            }
+            textView.replaceCharacters(in: insertRange, with: insertion)
+            textView.didChangeText()
+            let newCaret = selection.location + (insertion as NSString).length
+            textView.setSelectedRange(NSRange(location: newCaret, length: 0))
+
+            if case .ordered(let n) = kind {
+                renumberFollowing(in: textView, from: newCaret, expectedIndent: indent, startNumber: n + 2)
+            }
+            return true
+        }
+
+        private func renumberFollowing(in textView: NSTextView, from location: Int, expectedIndent: String, startNumber: Int) {
+            var nextNumber = startNumber
+            
+            // 1. Skip the current line (the one containing 'location')
+            let text = textView.string as NSString
+            let currentLineRange = text.lineRange(for: NSRange(location: location, length: 0))
+            var searchFrom = currentLineRange.location + currentLineRange.length
+
+            // 2. Scan subsequent lines
+            while true {
+                let currentText = textView.string as NSString
+                guard searchFrom < currentText.length else { break }
+
+                let lineRange = currentText.lineRange(for: NSRange(location: searchFrom, length: 0))
+                let line = currentText.substring(with: lineRange)
+                
+                // If the line is empty (just a newline), stop.
+                if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { break }
+
+                let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+                // If indentation doesn't match exactly, stop.
+                guard indent == expectedIndent else { break }
+
+                let body = String(line.dropFirst(indent.count))
+                guard let kind = ListPrefix.detect(in: body),
+                      case .ordered = kind else { 
+                    // Not a list item at this indentation level, stop.
+                    break 
+                }
+
+                let oldPrefixLength = kind.prefixLength
+                let newPrefix = "\(nextNumber). "
+
+                if body.prefix(oldPrefixLength) != newPrefix {
+                    let replaceRange = NSRange(location: lineRange.location + indent.count, length: oldPrefixLength)
+                    if textView.shouldChangeText(in: replaceRange, replacementString: newPrefix) {
+                        textView.replaceCharacters(in: replaceRange, with: newPrefix)
+                        textView.didChangeText()
+                    }
+                }
+
+                // Advance to next line. Refresh length in case prefix changed length.
+                nextNumber += 1
+                let updatedText = textView.string as NSString
+                let updatedLineRange = updatedText.lineRange(for: NSRange(location: lineRange.location, length: 0))
+                searchFrom = updatedLineRange.location + updatedLineRange.length
+            }
         }
 
         private func findTagPrefix(in textView: NSTextView) -> String {
@@ -192,14 +319,16 @@ struct EntryEditorView: NSViewRepresentable {
             while i >= 0 {
                 let ch = nsString.character(at: i)
                 guard let scalar = Unicode.Scalar(ch) else { return "" }
+                
                 if scalar == "/" {
                     // `//` escape — caller typed a literal slash sequence; suppress.
                     if i > 0, nsString.character(at: i - 1) == 0x2F { return "" }
                     return nsString.substring(with: NSRange(location: i, length: cursorLocation - i))
-                } else if CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "-" {
-                    i -= 1
-                } else {
+                } else if CharacterSet.newlines.contains(scalar) {
                     return ""
+                } else {
+                    // Allow alphanumerics, symbols, AND spaces in arguments
+                    i -= 1
                 }
             }
             return ""
@@ -395,6 +524,9 @@ class JrnlTextView: NSTextView {
             } else {
                 undoManager?.undo()
             }
+            return true
+        case ";":
+            checkSpelling(nil)
             return true
         default:
             return super.performKeyEquivalent(with: event)

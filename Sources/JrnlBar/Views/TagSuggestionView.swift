@@ -4,6 +4,7 @@ struct TagSuggestionView: View {
     let tags: [Tag]
     let filter: String
     @Binding var selectedIndex: Int
+    var onSelect: (Tag) -> Void
 
     var filteredTags: [Tag] {
         let query = filter.lowercased().replacingOccurrences(of: "@", with: "")
@@ -36,6 +37,7 @@ struct TagSuggestionView: View {
                         .clipShape(Capsule())
                         .onTapGesture {
                             selectedIndex = index
+                            onSelect(tag)
                         }
                 }
 

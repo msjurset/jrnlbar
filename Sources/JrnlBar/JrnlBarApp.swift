@@ -102,6 +102,11 @@ final class AppController {
         let aboutItem = NSMenuItem(title: "About JrnlBar", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
+        
+        let helpItem = NSMenuItem(title: "Documentation", action: #selector(showHelp), keyEquivalent: "")
+        helpItem.target = self
+        menu.addItem(helpItem)
+        
         menu.addItem(NSMenuItem.separator())
 
         let restartItem = NSMenuItem(title: "Restart", action: #selector(restart), keyEquivalent: "")
@@ -228,6 +233,24 @@ class FloatingPanel: NSPanel {
     func closeAnimated(completion: @escaping () -> Void) {
         guard let contentView = self.contentView else {
             orderOut(nil)
+            completion()
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            self.animator().alphaValue = 0
+            contentView.layer?.setAffineTransform(CGAffineTransform(scaleX: 0.95, y: 0.95))
+        }, completionHandler: {
+            self.orderOut(nil)
+            self.alphaValue = 1
+            contentView.layer?.setAffineTransform(.identity)
+            completion()
+        })
+    }
+}
+ut(nil)
             completion()
             return
         }

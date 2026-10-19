@@ -113,21 +113,52 @@ public struct ContentView: View {
         showVimCheatsheet = false
     }
 
-    private var tagSuggestion: TagSuggestionView {
+    private var filteredTags: [Tag] {
+        let query = tagPrefix.lowercased().replacingOccurrences(of: "@", with: "")
+        if query.isEmpty {
+            return Array(tags.prefix(6))
+        }
+        return Array(tags.filter {
+            $0.name.lowercased().replacingOccurrences(of: "@", with: "").hasPrefix(query)
+        }.prefix(6))
+    }
+
+    private var filteredCommands: [SlashCommand] {
+        var needle = slashPrefix
+        while needle.hasPrefix("/") { needle.removeFirst() }
+        
+        let parts = needle.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let first = parts.first else { return slashCommands }
+        
+        let lower = first.lowercased()
+        if lower.isEmpty {
+            return slashCommands
+        }
+        return slashCommands.filter { $0.name.lowercased().hasPrefix(lower) }
+    }
+
+    private var tagSuggestion: some View {
         TagSuggestionView(
             tags: tags,
             filter: tagPrefix,
-            selectedIndex: $tagSelectedIndex
+            selectedIndex: $tagSelectedIndex,
+            onSelect: { tag in
+                insertTagViaBinding(tag)
+            }
         )
     }
 
-    private var slashSuggestion: SlashSuggestionView {
+    private var slashSuggestion: some View {
         SlashSuggestionView(
             commands: slashCommands,
             filter: slashPrefix,
-            selectedIndex: $slashSelectedIndex
+            selectedIndex: $slashSelectedIndex,
+            onSelect: { cmd in
+                commitSlashCommand(cmd)
+            }
         )
     }
+
 
     private var isEditing: Bool { editingEntry != nil }
 
@@ -135,6 +166,92 @@ public struct ContentView: View {
         let sorted = sortNewestFirst ? recentEntries : recentEntries.reversed()
         guard let tag = filterTag else { return sorted }
         return sorted.filter { $0.tags.contains(tag) }
+    }
+
+    @State private var showHelpSheet = false
+
+    private func showHelp() {
+        showHelpSheet = true
+    }
+
+    private var footer: some View {
+        HStack {
+            Button(action: submit) {
+                Text(isEditing ? "Update Entry" : "Save Entry")
+            }
+            .disabled(entryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting)
+
+            if isEditing {
+                Button(action: cancelEdit) {
+                    Text("Cancel")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+
+            if journals.count > 1 {
+                Spacer().frame(width: 16)
+                HStack(spacing: 6) {
+                    ForEach(Array(journals.enumerated()), id: \.element) { index, journal in
+                        if index > 0 {
+                            Text("|")
+                                .font(.caption)
+                                .foregroundStyle(.quaternary)
+                        }
+                        Text(journal)
+                            .font(.caption)
+                            .fontWeight(journal == selectedJournal ? .bold : .regular)
+                            .foregroundStyle(journal == selectedJournal ? .primary : .secondary)
+                            .onTapGesture {
+                                guard !isEditing else { return }
+                                selectedJournal = journal
+                            }
+                    }
+                }
+                .opacity(isEditing ? 0.5 : 1)
+            }
+
+            if !statusMessage.isEmpty {
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .transition(.opacity)
+            }
+
+            Spacer()
+
+            if currentMode == .vim {
+                Button(action: { showVimCheatsheet.toggle() }) {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Vim command reference")
+                .popover(isPresented: $showVimCheatsheet, arrowEdge: .top) {
+                    VimCheatsheetView()
+                }
+                
+                Spacer().frame(width: 8)
+            }
+
+            modeBadge
+            
+            if currentMode == nil { Spacer().frame(width: 8) }
+
+            if isEditing {
+                Text("Editing (\(editingJournal ?? selectedJournal))")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Cmd+Enter")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     public var body: some View {
@@ -147,80 +264,7 @@ public struct ContentView: View {
                 slashSuggestion
             }
 
-            // Submit bar
-            HStack {
-                Button(action: submit) {
-                    Text(isEditing ? "Update Entry" : "Save Entry")
-                }
-                .disabled(entryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting)
-
-                if isEditing {
-                    Button(action: cancelEdit) {
-                        Text("Cancel")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                }
-
-                if journals.count > 1 {
-                    Spacer().frame(width: 16)
-                    HStack(spacing: 6) {
-                        ForEach(Array(journals.enumerated()), id: \.element) { index, journal in
-                            if index > 0 {
-                                Text("|")
-                                    .font(.caption)
-                                    .foregroundStyle(.quaternary)
-                            }
-                            Text(journal)
-                                .font(.caption)
-                                .fontWeight(journal == selectedJournal ? .bold : .regular)
-                                .foregroundStyle(journal == selectedJournal ? .primary : .secondary)
-                                .onTapGesture {
-                                    guard !isEditing else { return }
-                                    selectedJournal = journal
-                                }
-                        }
-                    }
-                    .opacity(isEditing ? 0.5 : 1)
-                }
-
-                if !statusMessage.isEmpty {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .transition(.opacity)
-                }
-
-                Spacer()
-
-                if currentMode == .vim {
-                    Button(action: { showVimCheatsheet.toggle() }) {
-                        Image(systemName: "questionmark.circle")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Vim command reference")
-                    .popover(isPresented: $showVimCheatsheet, arrowEdge: .top) {
-                        VimCheatsheetView()
-                    }
-                }
-
-                modeBadge
-
-                if isEditing {
-                    Text("Editing (\(editingJournal ?? selectedJournal))")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                } else {
-                    Text("Cmd+Enter")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            footer
 
             ZStack {
                 Divider()
@@ -270,10 +314,25 @@ public struct ContentView: View {
                     .font(.caption2)
                     .foregroundStyle(.quaternary)
                 Spacer()
+                
+                Button(action: showHelp) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.quaternary)
+                }
+                .buttonStyle(.plain)
+                .help("JrnlBar Documentation")
+                .padding(.trailing, 8)
+                .sheet(isPresented: $showHelpSheet) {
+                    HelpView()
+                }
             }
             .padding(.vertical, 4)
         }
         .frame(width: 400, height: 500)
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("showHelpSheet"))) { _ in
+            showHelpSheet = true
+        }
         .task {
             entryText = DraftManager.load()
             slashCommands = slashRegistry.reload()
@@ -325,7 +384,7 @@ public struct ContentView: View {
     }
 
     private func handleTagKey(_ event: EntryEditorView.SuggestionKeyEvent) -> Bool {
-        let items = tagSuggestion.filteredTags
+        let items = filteredTags
         guard !items.isEmpty else { return false }
 
         switch event {
@@ -357,8 +416,25 @@ public struct ContentView: View {
         tagPrefix = ""
     }
 
+    private func autocompleteSlashCommand(_ command: SlashCommand) {
+        guard !slashPrefix.isEmpty,
+              let range = entryText.range(of: slashPrefix, options: .backwards) else { return }
+        
+        let newText = "/" + command.name + " "
+        entryText.replaceSubrange(range, with: newText)
+        
+        // Move cursor to end of the new text
+        let prefixStartUTF16 = entryText.utf16.distance(
+            from: entryText.utf16.startIndex,
+            to: range.lowerBound.samePosition(in: entryText.utf16) ?? entryText.utf16.startIndex
+        )
+        pendingCursor = prefixStartUTF16 + newText.utf16.count
+        // Update slashPrefix so the dropdown stays open and reflects the new state
+        slashPrefix = newText
+    }
+
     private func handleSlashKey(_ event: EntryEditorView.SuggestionKeyEvent) -> Bool {
-        let items = slashSuggestion.filteredCommands
+        let items = filteredCommands
         guard !items.isEmpty else { return false }
 
         switch event {
@@ -369,6 +445,17 @@ public struct ContentView: View {
             slashSelectedIndex = (slashSelectedIndex - 1 + items.count) % items.count
             return true
         case .tab:
+            let command = items[slashSelectedIndex]
+            let prefix = slashPrefix.hasPrefix("/") ? String(slashPrefix.dropFirst()) : slashPrefix
+            
+            // If the typed word doesn't match the selected command name exactly,
+            // autocomplete the name and add a space for arguments.
+            if prefix.trimmingCharacters(in: .whitespaces).lowercased() != command.name.lowercased() {
+                autocompleteSlashCommand(command)
+                return true
+            }
+            
+            // Otherwise cycle selection
             slashSelectedIndex = (slashSelectedIndex + 1) % items.count
             return true
         case .enter:
@@ -379,9 +466,10 @@ public struct ContentView: View {
             return true
         case .space:
             // Space commits only on an exact case-insensitive match against
-            // the typed prefix; otherwise the space falls through and ends
-            // the slash context naturally.
-            if let cmd = slashRegistry.exactMatch(prefix: slashPrefix) {
+            // the typed prefix AND if the command allows space-commitment; 
+            // otherwise the space falls through and ends the slash context 
+            // naturally (or allows typing arguments).
+            if let cmd = slashRegistry.exactMatch(prefix: slashPrefix), cmd.commitsOnSpace {
                 commitSlashCommand(cmd)
                 return true
             }
@@ -392,10 +480,19 @@ public struct ContentView: View {
     private func commitSlashCommand(_ command: SlashCommand) {
         guard !slashPrefix.isEmpty,
               let range = entryText.range(of: slashPrefix, options: .backwards) else { return }
+        
         let prefixStartUTF16 = entryText.utf16.distance(
             from: entryText.utf16.startIndex,
             to: range.lowerBound.samePosition(in: entryText.utf16) ?? entryText.utf16.startIndex
         )
+
+        // Extract arguments if any
+        var arguments = ""
+        let prefix = slashPrefix.hasPrefix("/") ? String(slashPrefix.dropFirst()) : slashPrefix
+        let parts = prefix.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        if parts.count > 1 {
+            arguments = String(parts[1])
+        }
 
         switch command {
         case .template(let template):
@@ -421,7 +518,7 @@ public struct ContentView: View {
             // Execute the async command and inject the result at the cursor
             Task {
                 do {
-                    let result = try await inlineCommand.action()
+                    let result = try await inlineCommand.action(arguments, entryText)
                     if !result.isEmpty {
                         await MainActor.run {
                             // Re-calculate insertion point in case user typed while waiting
@@ -433,8 +530,15 @@ public struct ContentView: View {
                         }
                     }
                 } catch {
-                    // Fail silently for now; could add a toast/banner in the future
-                    print("Inline command failed: \(error)")
+                    await MainActor.run {
+                        // Insert the error text so the user knows it failed rather than silently doing nothing
+                        let currentUTF16 = entryText.utf16
+                        let safeOffset = min(pendingCursor ?? prefixStartUTF16, currentUTF16.count)
+                        let insertIndex = String.Index(utf16Offset: safeOffset, in: entryText)
+                        let errText = " [Error: \(error.localizedDescription)] "
+                        entryText.insert(contentsOf: errText, at: insertIndex)
+                        pendingCursor = safeOffset + errText.utf16.count
+                    }
                 }
             }
         }
@@ -480,6 +584,8 @@ public struct ContentView: View {
         editingEntry = entry
         editingJournal = selectedJournal
         entryText = entry.fullText
+        tagPrefix = ""
+        slashPrefix = ""
     }
 
     private func cancelEdit() {
@@ -488,6 +594,8 @@ public struct ContentView: View {
         entryText = DraftManager.load()
         currentMode = nil
         vimEngine = nil
+        tagPrefix = ""
+        slashPrefix = ""
     }
 
     private func submit() {

@@ -43,20 +43,27 @@ public final class SlashCommandRegistry {
 
     /// Commands whose name (case-insensitive) starts with the given
     /// prefix. Pass the run after `/`; leading slashes are stripped.
+    /// If the prefix contains whitespace, matches only against the first word.
     public func match(prefix: String) -> [SlashCommand] {
         var needle = prefix
         while needle.hasPrefix("/") { needle.removeFirst() }
-        let lower = needle.lowercased()
+        let parts = needle.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let first = parts.first else { return all }
+        let lower = first.lowercased()
+        
         if lower.isEmpty { return all }
         return all.filter { $0.name.lowercased().hasPrefix(lower) }
     }
 
     /// The unique command (if any) whose name equals the given prefix
     /// exactly (case-insensitive). Used by the space-trigger commit path.
+    /// If the prefix contains whitespace, matches only against the first word.
     public func exactMatch(prefix: String) -> SlashCommand? {
         var needle = prefix
         while needle.hasPrefix("/") { needle.removeFirst() }
-        let lower = needle.lowercased()
+        let parts = needle.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let first = parts.first else { return nil }
+        let lower = first.lowercased()
         return all.first { $0.name.lowercased() == lower }
     }
 

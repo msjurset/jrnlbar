@@ -53,12 +53,18 @@ public actor JrnlService {
     }
 
     public func fetchTags(journal: String) throws -> [Tag] {
-        let output = try run(arguments: [journal, "--tags"])
+        var args: [String] = []
+        if !journal.isEmpty { args.append(journal) }
+        args.append("--tags")
+        let output = try run(arguments: args)
         return JrnlParser.parseTags(from: output)
     }
 
     public func fetchRecentEntries(journal: String, count: Int = 10) throws -> [JournalEntry] {
-        let output = try run(arguments: [journal, "--format", "json", "-n", "\(count)"])
+        var args: [String] = []
+        if !journal.isEmpty { args.append(journal) }
+        args.append(contentsOf: ["--format", "json", "-n", "\(count)"])
+        let output = try run(arguments: args)
         return try JrnlParser.parseEntries(from: output)
     }
 

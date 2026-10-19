@@ -7,19 +7,29 @@ actor WeatherService {
 
     /// Fetch a simple weather summary (current temp and condition).
     func fetchCurrentWeather(latitude: Double, longitude: Double) async throws -> String {
-        let urlStr = "https://api.open-meteo.com/v1/forecast?" +
-            "latitude=\(latitude)&longitude=\(longitude)" +
-            "&current_weather=true" +
-            "&temperature_unit=fahrenheit"
-            
-        guard let url = URL(string: urlStr) else { throw WeatherError.invalidURL }
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let r = try JSONDecoder().decode(OMResponse.self, from: data)
-        guard let current = r.current_weather else { throw WeatherError.missingData }
+        let tempUnit = UserDefaults.standard.string(forKey: "weatherTempUnit") ?? "fahrenheit"
+        let windUnit = UserDefaults.standard.string(forKey: "weatherWindUnit") ?? "mph"
+        let tempSymbol = tempUnit == "celsius" ? "°C" : "°F"
         
-        let desc = WeatherCode.description(for: current.weathercode)
-        let temp = Int(current.temperature.rounded())
-        return "\(temp)°F, \(desc)"
+        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+        components.queryItems = [
+            URLQueryItem(name: "latitude", value: String(format: "%.6f", latitude)),
+            URLQueryItem(name: "longitude", value: String(format: "%.6f", longitude)),
+            URLQueryItem(name: "current", value: "temperature_2m,weather_code"),
+            URLQueryItem(name: "temperature_unit", value: tempUnit),
+            URLQueryItem(name: "windspeed_unit", value: windUnit)
+        ]
+            
+        guard let url = components.url else { throw WeatherError.invalidURL }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        
+        let decoder = JSONDecoder()
+        let r = try decoder.decode(OMResponse.self, from: data)
+        guard let current = r.current else { throw WeatherError.missingData }
+        
+        let desc = WeatherCode.description(for: current.weather_code)
+        let temp = Int(current.temperature_2m.rounded())
+        return "\(temp)\(tempSymbol), \(desc)"
     }
 }
 
@@ -38,12 +48,12 @@ enum WeatherError: Error, LocalizedError {
 // MARK: - Open-Meteo Response Models
 
 private struct OMResponse: Decodable {
-    let current_weather: OMCurrent?
+    let current: OMCurrent?
 }
 
 private struct OMCurrent: Decodable {
-    let temperature: Double
-    let weathercode: Int
+    let temperature_2m: Double
+    let weather_code: Int
 }
 
 // MARK: - WMO Weather Codes

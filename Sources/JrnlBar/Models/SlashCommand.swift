@@ -27,6 +27,14 @@ public enum SlashCommand: Identifiable, Hashable {
         }
     }
 
+    public var commitsOnSpace: Bool {
+        switch self {
+        case .template: return true
+        case .mode: return true
+        case .inline(let i): return i.commitsOnSpace
+        }
+    }
+
     public var id: String { name }
 }
 
@@ -49,13 +57,15 @@ public struct ModeCommand: Identifiable, Hashable {
 public struct InlineCommand: Identifiable, Hashable, Sendable {
     public let name: String
     public let description: String
-    public let action: @Sendable () async throws -> String
+    public let commitsOnSpace: Bool
+    public let action: @Sendable (_ arguments: String, _ context: String) async throws -> String
 
     public var id: String { name }
 
-    public init(name: String, description: String, action: @escaping @Sendable () async throws -> String) {
+    public init(name: String, description: String, commitsOnSpace: Bool = true, action: @escaping @Sendable (_ arguments: String, _ context: String) async throws -> String) {
         self.name = name
         self.description = description
+        self.commitsOnSpace = commitsOnSpace
         self.action = action
     }
     
@@ -104,44 +114,62 @@ public let builtInModeCommands: [ModeCommand] = [
 ]
 
 public let builtInInlineCommands: [InlineCommand] = [
-    InlineCommand(name: "todo", description: "insert task checkbox") { "- [ ] " },
-    InlineCommand(name: "quote", description: "insert blockquote") { "> " },
-    InlineCommand(name: "date", description: "insert current date") {
+    InlineCommand(name: "todo", description: "insert task checkbox") { _, _ in "- [ ] " },
+    InlineCommand(name: "quote", description: "insert blockquote") { _, _ in "> " },
+    InlineCommand(name: "date", description: "insert current date") { _, _ in
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: Date())
     },
-    InlineCommand(name: "now", description: "insert current time") {
+    InlineCommand(name: "now", description: "insert current time") { _, _ in
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
         return f.string(from: Date())
     },
-    InlineCommand(name: "loc", description: "insert current location") {
+    InlineCommand(name: "loc", description: "insert current location") { _, _ in
         let p = try await LocationService.shared.fetchCurrentPlacemark()
         let city = p.locality ?? p.subAdministrativeArea ?? "Unknown City"
         let state = p.administrativeArea ?? ""
         return state.isEmpty ? city : "\(city), \(state)"
     },
-    InlineCommand(name: "weather", description: "insert current weather") {
+    InlineCommand(name: "weather", description: "insert current weather") { _, _ in
         let loc = try await LocationService.shared.fetchCurrentLocation()
         let weather = try await WeatherService.shared.fetchCurrentWeather(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
         return weather
     },
-    InlineCommand(name: "last", description: "insert last jrnl entry") {
-        // JrnlService is an actor, so we can just instantiate one per call (it has no stored state)
+    InlineCommand(name: "last", description: "insert last journal entries [count]", commitsOnSpace: false) { args, _ in
         let svc = JrnlService()
-        // Assuming default journal; `fetchRecentEntries` takes a journal name but defaults to 10
-        // We'll pass "" to let jrnl use default, or we can fetch journals and pick the first
-        let entries = try await svc.fetchRecentEntries(journal: "", count: 1)
-        guard let last = entries.first else { return "" }
-        return last.body.components(separatedBy: .newlines)
-            .map { "> \($0)" }
-            .joined(separator: "\n")
+        let count = abs(Int(args.trimmingCharacters(in: .whitespaces)) ?? 1)
+        let entries = try await svc.fetchRecentEntries(journal: "", count: count)
+        guard !entries.isEmpty else { return "" }
+        
+        return entries.map { entry in
+            entry.body.components(separatedBy: .newlines)
+                .map { "> \($0)" }
+                .joined(separator: "\n")
+        }.joined(separator: "\n\n")
     },
-    InlineCommand(name: "tags", description: "insert top tags") {
+    InlineCommand(name: "tags", description: "insert top tags [filter/count]", commitsOnSpace: false) { args, _ in
         let svc = JrnlService()
-        let tags = try await svc.fetchTags(journal: "")
+        var tags = try await svc.fetchTags(journal: "")
+        
+        let rawArgs = args.trimmingCharacters(in: .whitespaces)
+        if let count = Int(rawArgs) {
+            // Numeric argument: limit the top tags
+            return tags.prefix(max(1, abs(count))).map { $0.name }.joined(separator: ", ")
+        } else if !rawArgs.isEmpty {
+            // String argument: filter tags containing the string
+            let filter = rawArgs.lowercased()
+            tags = tags.filter { $0.name.lowercased().contains(filter) }
+        }
+        
         guard !tags.isEmpty else { return "" }
         return tags.prefix(10).map { $0.name }.joined(separator: ", ")
+    },
+    InlineCommand(name: "suggest", description: "local AI tag suggestions") { _, context in
+        let svc = JrnlService()
+        let tags = try await svc.fetchTags(journal: "")
+        let suggested = await TagSuggestionService.shared.suggestTags(for: context, existingTags: tags)
+        return suggested.joined(separator: ", ")
     }
 ]

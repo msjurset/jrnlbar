@@ -4,11 +4,16 @@ struct SlashSuggestionView: View {
     let commands: [SlashCommand]
     let filter: String
     @Binding var selectedIndex: Int
+    var onSelect: (SlashCommand) -> Void
 
     var filteredCommands: [SlashCommand] {
         var needle = filter
         while needle.hasPrefix("/") { needle.removeFirst() }
-        let lower = needle.lowercased()
+        
+        let parts = needle.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let first = parts.first else { return commands }
+        
+        let lower = first.lowercased()
         if lower.isEmpty {
             return commands
         }
@@ -77,6 +82,7 @@ struct SlashSuggestionView: View {
         .clipShape(Capsule())
         .onTapGesture {
             selectedIndex = index
+            onSelect(command)
         }
     }
 }

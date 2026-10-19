@@ -7,45 +7,87 @@ enum LocationError: Error, LocalizedError {
     
     var errorDescription: String? {
         switch self {
-        case .unauthorized: return "Location access denied. Enable it in System Settings."
-        case .failed: return "Failed to determine current location."
+        case .unauthorized: return "Location access denied. Enable it in System Settings > Privacy & Security > Location Services."
+        case .failed: return "Failed to determine current location. Ensure Location Services are enabled and the app has permission."
         }
     }
 }
 
-final class LocationService: NSObject, CLLocationManagerDelegate, Sendable {
+@MainActor
+final class LocationService: NSObject, CLLocationManagerDelegate, @unchecked Sendable {
     static let shared = LocationService()
     
-    private let manager: CLLocationManager
+    private var manager: CLLocationManager?
     private let geocoder: CLGeocoder
     
-    // We use a continuations array to support concurrent requests resolving together
-    private let continuations = NSLock()
+    private let lock = NSLock()
     private var pending: [CheckedContinuation<CLLocation, Error>] = []
+    private var timeoutTask: Task<Void, Never>?
     
     override init() {
-        self.manager = CLLocationManager()
         self.geocoder = CLGeocoder()
         super.init()
-        self.manager.delegate = self
+    }
+    
+    private func getManager() -> CLLocationManager {
+        if let manager = manager { return manager }
+        let m = CLLocationManager()
+        m.delegate = self
+        self.manager = m
+        return m
     }
     
     func fetchCurrentLocation() async throws -> CLLocation {
-        let authStatus = manager.authorizationStatus
-        if authStatus == .denied || authStatus == .restricted {
-            throw LocationError.unauthorized
-        }
-        
         return try await withCheckedThrowingContinuation { cont in
-            continuations.lock()
+            lock.lock()
             pending.append(cont)
             let isFirst = pending.count == 1
-            continuations.unlock()
+            lock.unlock()
             
             if isFirst {
-                DispatchQueue.main.async {
-                    self.manager.requestWhenInUseAuthorization()
-                    self.manager.requestLocation()
+                Task {
+                    let m = getManager()
+                    let status = m.authorizationStatus
+                    
+                    if status == .denied || status == .restricted {
+                        self.failWaiters(with: LocationError.unauthorized)
+                        return
+                    }
+                    
+                    if status == .notDetermined {
+                        m.requestWhenInUseAuthorization()
+                    } else if status == .authorizedAlways {
+                        self.startTimeout()
+                        m.startUpdatingLocation()
+                    } else {
+                        self.failWaiters(with: LocationError.unauthorized)
+                    }
+                }
+            }
+        }
+    }
+    
+    private func startTimeout() {
+        timeoutTask?.cancel()
+        timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            
+            failWaiters(with: LocationError.failed)
+        }
+    }
+    
+    private func failWaiters(with error: Error) {
+        lock.lock()
+        let waiters = pending
+        pending.removeAll()
+        lock.unlock()
+        
+        if !waiters.isEmpty {
+            Task {
+                self.manager?.stopUpdatingLocation()
+                for w in waiters {
+                    w.resume(throwing: error)
                 }
             }
         }
@@ -60,34 +102,46 @@ final class LocationService: NSObject, CLLocationManagerDelegate, Sendable {
     
     // MARK: - CLLocationManagerDelegate
     
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
         
-        continuations.lock()
-        let waiters = pending
-        pending.removeAll()
-        continuations.unlock()
-        
-        for w in waiters {
-            w.resume(returning: loc)
+        Task { @MainActor in
+            manager.stopUpdatingLocation()
+            self.timeoutTask?.cancel()
+            
+            self.lock.lock()
+            let waiters = self.pending
+            self.pending.removeAll()
+            self.lock.unlock()
+            
+            for w in waiters {
+                w.resume(returning: loc)
+            }
         }
     }
     
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        continuations.lock()
-        let waiters = pending
-        pending.removeAll()
-        continuations.unlock()
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        if let clErr = error as? CLError, clErr.code == .locationUnknown {
+            return
+        }
         
-        for w in waiters {
-            w.resume(throwing: LocationError.failed)
+        Task { @MainActor in
+            manager.stopUpdatingLocation()
+            self.timeoutTask?.cancel()
+            self.failWaiters(with: LocationError.failed)
         }
     }
-}
-
-// Simple locking utility since NSLock isn't Sendable out of the box in older swift versions
-private final class SafeLock: @unchecked Sendable {
-    private let _lock = Foundation.NSLock()
-    func lock() { _lock.lock() }
-    func unlock() { _lock.unlock() }
+    
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            let status = manager.authorizationStatus
+            if status == .authorizedAlways {
+                self.startTimeout()
+                manager.startUpdatingLocation()
+            } else if status == .denied || status == .restricted {
+                self.timeoutTask?.cancel()
+                self.failWaiters(with: LocationError.unauthorized)
+            }
+        }
+    }
 }

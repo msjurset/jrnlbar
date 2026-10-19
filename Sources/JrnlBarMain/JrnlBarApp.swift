@@ -230,6 +230,10 @@ final class AppController {
         prefsItem.target = self
         menu.addItem(prefsItem)
 
+        let helpItem = NSMenuItem(title: "Documentation", action: #selector(showHelp), keyEquivalent: "")
+        helpItem.target = self
+        menu.addItem(helpItem)
+
         let aboutItem = NSMenuItem(title: "About JrnlBar", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
@@ -272,6 +276,13 @@ final class AppController {
         preferencesWindow?.makeKeyAndOrderFront(nil)
     }
 
+    @objc private func showHelp() {
+        if !panel.isVisible {
+            openPanel()
+        }
+        NotificationCenter.default.post(name: Notification.Name("showHelpSheet"), object: nil)
+    }
+
     @objc private func restart() {
         let path = Bundle.main.bundlePath
         let pid = ProcessInfo.processInfo.processIdentifier
@@ -308,14 +319,29 @@ final class AppController {
     }
 }
 
+private func acquireSingleInstanceLock() -> Bool {
+    let lockPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("com.local.JrnlBar.lock")
+    let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
+    if fd < 0 { return true }
+    if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+        close(fd)
+        return false
+    }
+    return true
+}
+
 // MARK: - Entry point
 
 @main
 enum JrnlBarApp {
     static func main() {
-        // Single-instance guard: if another JrnlBar is already running, exit
-        // immediately. Defends against macOS reopening the app on login while
-        // the LaunchAgent also fires, duplicate Login Items entries, etc.
+        // Single-instance guard: POSIX flock + NSRunningApplication fallback.
+        // Defends against macOS login race conditions when LaunchAgent and Login Items
+        // or session restore fire simultaneously.
+        guard acquireSingleInstanceLock() else {
+            exit(0)
+        }
+
         let bundleID = Bundle.main.bundleIdentifier ?? "com.local.JrnlBar"
         let myPID = ProcessInfo.processInfo.processIdentifier
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
